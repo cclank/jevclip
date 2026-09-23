@@ -14,12 +14,15 @@ jevclip run 访谈.mp4 --focus "硬件配置和运行速度"    # 只要和你�
 ## 安装
 
 ```bash
-git clone <this repo> && cd jevclip
-python -m venv .venv && .venv/bin/pip install -e .    # 或 uv venv && uv pip install -e .
-brew install ffmpeg                                   # 只看时间线和总结可以不装（加 --no-cut）
+cd jevclip
+uv tool install --editable .                  # 装成全局命令，任意目录直接敲 jevclip；改了代码不用重装
+# 不用 uv：python -m venv .venv && .venv/bin/pip install -e .，命令在 .venv/bin/jevclip
+brew install ffmpeg                           # 只看时间线和总结可以不装（加 --no-cut）
+echo 'export TYPESAFE_API_KEY=你的key' >> ~/.zshrc   # 然后新开一个终端
 ```
 
 需要 Python ≥ 3.10、一个 [TypeSafe](https://docs.typesafe.ai) 的 API Key。写总结还需要一个 OpenAI 兼容的模型接口（见[配置](#配置)），没有也能跑，只是总结换成原文摘录。
+卸载：`uv tool uninstall jevclip`。
 
 ## 准备输入
 
