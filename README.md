@@ -1,5 +1,14 @@
 # jevclip
 
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![Dependencies](https://img.shields.io/badge/dependencies-0-2ea44f)](pyproject.toml)
+[![Judge](https://img.shields.io/badge/judge-jev--1.13.0-6f42c1)](https://docs.typesafe.ai)
+[![FFmpeg](https://img.shields.io/badge/FFmpeg-highlight%20reels-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org)
+[![Subtitles](https://img.shields.io/badge/subtitles-SRT%20%7C%20VTT%20%7C%20whisper%20JSON-0a7bbb)](#准备输入)
+[![Tests](https://img.shields.io/badge/tests-offline%2C%20no%20API%20key-2ea44f)](#开发)
+[![Tested on](https://img.shields.io/badge/tested%20on-macOS-000000?logo=apple&logoColor=white)](#实测)
+[![Status](https://img.shields.io/badge/status-alpha-orange)](#门槛怎么定)
+
 把视频里有价值的部分留下来：**Jev 逐段判断字幕，代码剪出高亮视频，总结里每一句都能点回原视频的时间点。**
 
 寒暄、广告、空话、鸡汤、夸大其词的段落被过滤掉，每一段舍弃都写明原因；留下来的按价值排序、按原顺序拼成高亮视频。
