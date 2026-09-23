@@ -1,0 +1,136 @@
+import argparse
+import os
+import sys
+
+from . import labels, pipeline, rubric, subtitles
+from .jev import MODEL, JevClient
+from .llm import ChatLLM
+from .store import Store
+
+DEFAULT_DB = os.environ.get("JEVCLIP_DB", "~/.jevclip/cache.db")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="jevclip",
+        description="Keep the valuable parts of a video: judged timeline, cited summary, highlight reel.",
+    )
+    ap.add_argument("--db", default=DEFAULT_DB, help="cache of transcripts and Jev answers (env JEVCLIP_DB)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("run", help="video(s), subtitle file(s) or a directory of them")
+    p.add_argument("paths", nargs="+")
+    p.add_argument("--subs", help="subtitle file for a single video (default: found next to it)")
+    p.add_argument("--title", help="title for a single video (default: file name)")
+    p.add_argument("--focus", action="append", default=[], metavar="TEXT",
+                   help="what you care about; segments unrelated to every focus are dropped (repeatable, max %d)"
+                   % rubric.MAX_FOCUS)
+    p.add_argument("--out", default="jevclip-out", help="output folder (default ./jevclip-out)")
+    p.add_argument("--max-seconds", type=float, default=180.0,
+                   help="highlight reel budget in seconds; 0 keeps every valuable segment")
+    p.add_argument("--threshold", type=float, default=rubric.Policy.threshold,
+                   help="minimum value to keep a segment (provisional default)")
+    p.add_argument("--segment-seconds", type=float, default=subtitles.TARGET)
+    p.add_argument("--model", default=MODEL)
+    p.add_argument("--no-cut", action="store_true", help="timeline and summary only")
+    p.add_argument("--no-summary", action="store_true", help="skip the summary model")
+    p.add_argument("--fast", action="store_true", help="hardware H.264 (macOS VideoToolbox)")
+    p.add_argument("--no-reuse", action="store_true", help="call Jev even for segments already judged")
+
+    p = sub.add_parser("export", help="judged segments as JSONL with an empty keep/drop label")
+    p.add_argument("path")
+
+    p = sub.add_parser("eval", help="read labeled segments back and recommend a threshold")
+    p.add_argument("path")
+    p.add_argument("--max-error", type=float, default=0.1,
+                   help="highest acceptable share of kept segments a human would drop")
+
+    args = ap.parse_args(argv)
+    with Store(args.db) as store:
+        if args.cmd == "export":
+            n = labels.export(store, args.path)
+            print("%d segments -> %s   fill in \"label\" with keep / drop" % (n, args.path))
+            return 0
+        if args.cmd == "eval":
+            return _eval(args)
+        return _run(store, args)
+
+
+def _eval(args):
+    report = labels.evaluate(labels.load(args.path), max_error=args.max_error)
+    if not report["labeled"]:
+        print("no labeled rows in %s (%d rows total)" % (args.path, report["total"]))
+        return 1
+    print("labeled %d of %d   agreement with current policy %.2f"
+          % (report["labeled"], report["total"], report["agreement"]))
+    print("\nthreshold  kept  error  recall")
+    for s in report["sweep"]:
+        mark = "  <- recommended (error <= %.2f)" % args.max_error if s["threshold"] == report["recommended"] else ""
+        print("  %.2f    %4d   %.2f   %.2f%s" % (s["threshold"], s["kept"], s["error"], s["recall"], mark))
+    if report["recommended"] is None:
+        print("\nno threshold keeps error <= %.2f on this set" % args.max_error)
+    return 0
+
+
+def _run(store, args):
+    if len(args.focus) > rubric.MAX_FOCUS:
+        print("at most %d --focus" % rubric.MAX_FOCUS, file=sys.stderr)
+        return 2
+    single = len(args.paths) == 1 and not os.path.isdir(args.paths[0])
+    if (args.subs or args.title) and not single:
+        print("--subs and --title apply to a single video", file=sys.stderr)
+        return 2
+
+    items = pipeline.discover(args.paths, subs=args.subs, exclude=args.out)
+    if not items:
+        print("no videos or subtitle files found", file=sys.stderr)
+        return 1
+    client = JevClient(model=args.model)
+    llm = None if args.no_summary else ChatLLM.from_env()
+    policy = rubric.Policy(threshold=args.threshold)
+    failed = 0
+    try:
+        for n, (video, subs) in enumerate(items, 1):
+            print("[%d/%d] %s" % (n, len(items), os.path.basename(video or subs)))
+            if subs is None:
+                print("      skipped: no subtitles next to it (.srt / .vtt / .json with the same name)")
+                failed += 1
+                continue
+            try:
+                r = pipeline.process(store, client, video, subs, args.out, focus=args.focus, policy=policy,
+                                     max_seconds=args.max_seconds, llm=llm, cut_video=not args.no_cut,
+                                     fast=args.fast, reuse=not args.no_reuse, title=args.title,
+                                     target=args.segment_seconds)
+            except (ValueError, RuntimeError, OSError) as exc:
+                print("      failed: %s" % exc)
+                failed += 1
+                continue
+            line = "      %d 段 → 有价值 %d 段（%s）" % (r["segments"], r["kept"], subtitles.fmt_time(r["kept_seconds"]))
+            if r["reel"]:
+                line += " · 高亮 %d 段（%s）" % (r["clips"], subtitles.fmt_time(r["reel_seconds"]))
+            elif video is None:
+                line += " · 只有字幕，未剪视频"
+            print(line)
+            extra = []
+            if r["reused"]:
+                extra.append("%d 段读缓存" % r["reused"])
+            if r["undecided"]:
+                extra.append("%d 段未判断（%s）" % (r["undecided"], ", ".join(r["errors"])))
+            if r["summary_note"]:
+                extra.append(r["summary_note"])
+            if r["unknown_citations"]:
+                extra.append("总结里删掉 %d 处无效引用" % len(r["unknown_citations"]))
+            u = r["usage"]
+            print("      Jev %d 次请求 $%.4f%s → %s/"
+                  % (u["requests"], u["usd"], "  · " + "；".join(extra) if extra else "", r["folder"]))
+    finally:
+        client.close()
+    u = client.usage
+    print("\ntotal: %d video(s), Jev %d requests, %d input tokens, $%.4f%s"
+          % (len(items), u["requests"], u["input_tokens"], u["usd"],
+             ", %d failed or skipped" % failed if failed else ""))
+    return 1 if failed == len(items) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

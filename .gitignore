@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+*.db
+*.db-wal
+*.db-shm
+dist/
+jevclip-out/
+demo/
