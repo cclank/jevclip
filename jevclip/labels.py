@@ -9,7 +9,6 @@ import json
 
 from .rubric import RUBRIC, Policy, Verdict, assess
 from .store import Segment
-from .subtitles import fmt_range
 
 THRESHOLDS = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
 
@@ -27,9 +26,11 @@ def export(store, path, policy=None):
            ORDER BY j.id""",
         (RUBRIC,),
     ).fetchall()
-    count = 0
+    count, where = 0, {}
     with open(path, "w", encoding="utf-8") as fh:
         for r in rows:
+            if r["doc_id"] not in where:
+                where[r["doc_id"]] = {s.id: s.where for s in store.transcript(r["doc_id"]).segments}
             text = r["text"][r["char_start"] : r["char_end"]]
             seg = Segment(r["segment"], r["t_start"], r["t_end"], r["char_start"], r["char_end"], text)
             v = assess([Verdict(seg, "ok", json.loads(r["answers"]))], policy)[0]
@@ -37,7 +38,7 @@ def export(store, path, policy=None):
                 v.focus is None or v.focus >= policy.focus_min)
             fh.write(json.dumps({
                 "doc_id": r["doc_id"], "title": r["title"], "segment": r["segment"],
-                "time": fmt_range(r["t_start"], r["t_end"]), "focus": json.loads(r["focus"]),
+                "time": where[r["doc_id"]].get(r["segment"], ""), "focus": json.loads(r["focus"]),
                 "text": text, "kind": v.kind, "value": round(v.value, 4), "gates_ok": gates,
                 "keep": v.keep, "reasons": v.reasons, "label": None,
             }, ensure_ascii=False) + "\n")

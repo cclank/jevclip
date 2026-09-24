@@ -1,8 +1,9 @@
 """One SQLite file: transcripts, and every answer Jev has given about them.
 
 A transcript is kept verbatim — cue texts one per line — with the cue timings
-alongside. Segments are ranges of whole cues, so any segment's text and times
-can be replayed exactly from what is stored.
+alongside. Segments are ranges of whole cues, so any segment's text and
+position can be replayed exactly from what is stored. A script without
+timestamps is stored the same way; its positions are paragraph numbers.
 """
 
 import hashlib
@@ -14,7 +15,7 @@ import time
 from dataclasses import dataclass
 
 from . import subtitles
-from .subtitles import Cue
+from .subtitles import Cue, fmt_range
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS transcripts(
@@ -27,7 +28,8 @@ CREATE TABLE IF NOT EXISTS transcripts(
     cues         TEXT NOT NULL,
     segments     TEXT NOT NULL,
     content_hash TEXT NOT NULL,
-    added_at     REAL NOT NULL
+    added_at     REAL NOT NULL,
+    timed        INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS judgments(
@@ -61,6 +63,15 @@ class Segment:
     char_start: int
     char_end: int
     text: str
+    paras: tuple = None  # (first, last) paragraph of a script without timestamps
+
+    @property
+    def where(self):
+        """How a person finds this segment: a time range, or ¶ paragraphs."""
+        if self.paras:
+            first, last = self.paras
+            return "¶%d" % first if first == last else "¶%d–%d" % (first, last)
+        return fmt_range(self.start, self.end)
 
 
 @dataclass
@@ -73,6 +84,7 @@ class Transcript:
     text: str
     cues: list
     segments: list
+    timed: bool = True
 
 
 class Store:
@@ -85,6 +97,9 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(transcripts)")}
+        if "timed" not in columns:  # a cache made before scripts were supported
+            self.db.execute("ALTER TABLE transcripts ADD COLUMN timed INTEGER NOT NULL DEFAULT 1")
 
     def close(self):
         self.db.close()
@@ -101,11 +116,13 @@ class Store:
         else bumps the version."""
         cues = subtitles.parse(subtitles_path)
         if not cues:
-            raise ValueError("%s: no timed cues found" % subtitles_path)
+            raise ValueError("%s: no text found" % subtitles_path)
+        timed = all(c.para is None for c in cues)
         lines, cue_map, pos = [], [], 0
         for cue in cues:
             lines.append(cue.text)
-            cue_map.append([pos, pos + len(cue.text), round(cue.start, 3), round(cue.end, 3)])
+            entry = [pos, pos + len(cue.text), round(cue.start, 3), round(cue.end, 3)]
+            cue_map.append(entry if timed else entry + [cue.para])
             pos += len(cue.text) + 1
         text = "\n".join(lines) + "\n"
         ranges = [list(r) for r in subtitles.segment(cues, target=target)]
@@ -128,14 +145,14 @@ class Store:
             else:
                 self.db.execute(
                     """INSERT INTO transcripts(doc_id, version, title, video, subtitles, text, cues,
-                           segments, content_hash, added_at) VALUES(?,?,?,?,?,?,?,?,?,?)
+                           segments, content_hash, added_at, timed) VALUES(?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(doc_id) DO UPDATE SET
                            version=excluded.version, title=excluded.title, video=excluded.video,
                            subtitles=excluded.subtitles, text=excluded.text, cues=excluded.cues,
                            segments=excluded.segments, content_hash=excluded.content_hash,
-                           added_at=excluded.added_at""",
+                           added_at=excluded.added_at, timed=excluded.timed""",
                     (doc_id, (row["version"] + 1) if row else 1, title, video, subs, text,
-                     json.dumps(cue_map), json.dumps(ranges), digest, time.time()),
+                     json.dumps(cue_map), json.dumps(ranges), digest, time.time(), int(timed)),
                 )
         return self.transcript(doc_id)
 
@@ -143,14 +160,16 @@ class Store:
         r = self.db.execute("SELECT * FROM transcripts WHERE doc_id=?", (doc_id,)).fetchone()
         if r is None:
             raise KeyError(doc_id)
-        text, cue_map = r["text"], json.loads(r["cues"])
-        cues = [Cue(t0, t1, text[cs:ce]) for cs, ce, t0, t1 in cue_map]
+        text, cue_map, timed = r["text"], json.loads(r["cues"]), bool(r["timed"])
+        cues = [Cue(e[2], e[3], text[e[0] : e[1]], None if timed else e[4]) for e in cue_map]
         segments = []
         for n, (first, stop) in enumerate(json.loads(r["segments"]), 1):
             cs, ce = cue_map[first][0], cue_map[stop - 1][1]
-            segments.append(Segment("S%d" % n, cue_map[first][2], cue_map[stop - 1][3], cs, ce, text[cs:ce]))
+            paras = None if timed else (cue_map[first][4], cue_map[stop - 1][4])
+            segments.append(Segment("S%d" % n, cue_map[first][2], cue_map[stop - 1][3], cs, ce,
+                                    text[cs:ce], paras))
         return Transcript(r["doc_id"], r["version"], r["title"], r["video"], r["subtitles"],
-                          text, cues, segments)
+                          text, cues, segments, timed)
 
     def cached(self, request_hash):
         """(answers, model) for an identical request answered before, or None.

@@ -18,9 +18,9 @@ def main(argv=None):
     ap.add_argument("--db", default=DEFAULT_DB, help="cache of transcripts and Jev answers (env JEVCLIP_DB)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("run", help="video(s), subtitle file(s) or a directory of them")
+    p = sub.add_parser("run", help="video(s), subtitle or script file(s), or a directory of them")
     p.add_argument("paths", nargs="+")
-    p.add_argument("--subs", help="subtitle file for a single video (default: found next to it)")
+    p.add_argument("--subs", help="subtitles or a .txt/.md script for a single video (default: found next to it)")
     p.add_argument("--title", help="title for a single video (default: file name)")
     p.add_argument("--focus", action="append", default=[], metavar="TEXT",
                    help="what you care about; segments unrelated to every focus are dropped (repeatable, max %d)"
@@ -93,7 +93,7 @@ def _run(store, args):
         for n, (video, subs) in enumerate(items, 1):
             print("[%d/%d] %s" % (n, len(items), os.path.basename(video or subs)))
             if subs is None:
-                print("      skipped: no subtitles next to it (.srt / .vtt / .json with the same name)")
+                print("      skipped: no subtitles or script next to it (.srt / .vtt / .json / .txt / .md with the same name)")
                 failed += 1
                 continue
             try:
@@ -105,9 +105,13 @@ def _run(store, args):
                 print("      failed: %s" % exc)
                 failed += 1
                 continue
-            line = "      %d 段 → 有价值 %d 段（%s）" % (r["segments"], r["kept"], subtitles.fmt_time(r["kept_seconds"]))
+            line = "      %d 段 → 有价值 %d 段" % (r["segments"], r["kept"])
+            if r["timed"]:
+                line += "（%s）" % subtitles.fmt_time(r["kept_seconds"])
             if r["reel"]:
                 line += " · 高亮 %d 段（%s）" % (r["clips"], subtitles.fmt_time(r["reel_seconds"]))
+            elif not r["timed"]:
+                line += " · 文字稿没有时间点，出总结和取舍，不剪视频"
             elif video is None:
                 line += " · 只有字幕，未剪视频"
             print(line)

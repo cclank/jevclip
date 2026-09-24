@@ -16,10 +16,15 @@ def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
            summary=None, unknown=(), summary_note=None, flagged=0):
     kept = [v for v in verdicts if v.keep]
     undecided = [v for v in verdicts if v.keep is None]
-    length = verdicts[-1].segment.end if verdicts else 0.0
-    kept_seconds = sum(v.segment.end - v.segment.start for v in kept)
     out = ["# %s" % transcript.title, ""]
-    line = "时长 %s · 有价值 %d/%d 段（%s）" % (fmt_time(length), len(kept), len(verdicts), fmt_time(kept_seconds))
+    if transcript.timed:
+        length = verdicts[-1].segment.end if verdicts else 0.0
+        kept_seconds = sum(v.segment.end - v.segment.start for v in kept)
+        line = "时长 %s · 有价值 %d/%d 段（%s）" % (fmt_time(length), len(kept), len(verdicts), fmt_time(kept_seconds))
+    else:
+        chars = sum(len(flat(v.segment.text)) for v in verdicts)
+        kept_chars = sum(len(flat(v.segment.text)) for v in kept)
+        line = "文字稿约 %d 字 · 有价值 %d/%d 段（约 %d 字）" % (chars, len(kept), len(verdicts), kept_chars)
     if clips:
         line += " · 高亮 %d 段（%s）" % (len(clips), fmt_time(reel_seconds or sum(c.end - c.start for c in clips)))
     out.append(line)
@@ -33,11 +38,14 @@ def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
     out.append("门槛（临时，待标注校准）：价值 ≥ %.2f，闲话 < %.2f，可疑 < %.2f%s" % (
         policy.threshold, policy.junk_limit, policy.hype_limit,
         "，关注 ≥ %.2f" % policy.focus_min if focus else ""))
+    if not transcript.timed:
+        out.append("> 文字稿没有时间点：位置用原稿的段落编号 ¶ 表示，不剪高亮视频。")
     out.append("")
 
     out += ["## 总结", ""]
     if summary:
-        out.append("> 由总结模型根据保留的片段写成，方括号里的时间点由程序从片段编号换算。")
+        out.append("> 由总结模型根据保留的片段写成，方括号里的%s由程序从片段编号换算。"
+                   % ("时间点" if transcript.timed else "段落位置"))
         if flagged:
             out.append("> **%d 行里的数字或英文名称，在它引用的片段和前后相邻片段里都找不到，已在行末标 ⚠，请回原片核对。**" % flagged)
         out.append("")
@@ -52,12 +60,13 @@ def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
     out += ["## 要点摘录（原文%s）" % ("，价值最高的 %d 段" % DIGEST if len(kept) > DIGEST else ""), ""]
     for v in best:
         out.append("- [%s] %s · %.2f — %s" % (
-            fmt_range(v.segment.start, v.segment.end), KINDS[v.kind][0], v.value, _snippet(v.segment.text, 90)))
+            v.segment.where, KINDS[v.kind][0], v.value, _snippet(v.segment.text, 90)))
     if not kept:
         out.append("（无）")
     out.append("")
 
-    out += ["## 时间线", "", "| 片段 | 时间 | 类型 | 价值 | 取舍 | 原文 |", "|---|---|---|---|---|---|"]
+    out += ["## 时间线", "", "| 片段 | %s | 类型 | 价值 | 取舍 | 原文 |" % ("时间" if transcript.timed else "位置"),
+            "|---|---|---|---|---|---|"]
     for v in verdicts:
         if v.keep is None:
             verdict, kind, value = "? " + "；".join(v.reasons), "-", "-"
@@ -65,7 +74,7 @@ def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
             verdict = "✓ 保留" if v.keep else "✗ " + "；".join(v.reasons)
             kind, value = KINDS[v.kind][0], "%.2f" % v.value
         out.append("| %s | %s | %s | %s | %s | %s |" % (
-            v.segment.id, fmt_range(v.segment.start, v.segment.end), kind, value, verdict, _snippet(v.segment.text)))
+            v.segment.id, v.segment.where, kind, value, verdict, _snippet(v.segment.text)))
     out.append("")
 
     if clips:
@@ -79,11 +88,13 @@ def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
 
 
 def segment_record(v):
+    timed = v.segment.paras is None
     record = {
         "id": v.segment.id,
-        "start": round(v.segment.start, 3),
-        "end": round(v.segment.end, 3),
-        "time": fmt_range(v.segment.start, v.segment.end),
+        "start": round(v.segment.start, 3) if timed else None,
+        "end": round(v.segment.end, 3) if timed else None,
+        "paragraphs": None if timed else list(v.segment.paras),
+        "time": v.segment.where,
         "text": v.segment.text,
         "status": v.status,
         "keep": v.keep,

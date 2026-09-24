@@ -5,7 +5,7 @@ and Latin-script name checked against the text it cites."""
 import re
 
 from .rubric import KINDS
-from .subtitles import flat, fmt_range
+from .subtitles import flat
 
 SYSTEM = "你是严谨的视频内容编辑。只根据给出的字幕片段写总结，不添加片段里没有的信息。"
 PROMPT = """视频标题：{title}
@@ -24,6 +24,7 @@ PROMPT = """视频标题：{title}
 - 要点写三到八条，每条以“- ”开头，结尾用方括号标出依据的片段编号，例如 [S3] 或 [S3][S7]。
 - 可以直接用的做法或结论同样每条标出编号；没有就只写一行“无”。
 - 型号、产品名、人名、数字和单位照抄片段原文，不要换成你更熟悉的名称。
+- 不要自己加英文翻译或括号注释；原文是中文的术语就写中文。
 - 片段里没有说出来的结果不要推测，例如“我们来看看它选了哪个”之后没有交代结果，就不要写结果。
 - 只能引用上面出现过的编号。"""
 
@@ -37,9 +38,9 @@ _NONE = re.compile(r"^\s*[-*•]?\s*无[。.]?\s*$")
 
 
 def resolve(text, segments):
-    """[S7] -> [03:12–04:05]. Ids that were not handed to the writer are
-    removed and returned, so an invented citation can never become a
-    timestamp."""
+    """[S7] -> [03:12–04:05], or [¶3–4] for a script without timestamps.
+    Ids that were not handed to the writer are removed and returned, so an
+    invented citation can never become a position."""
     unknown = []
 
     def swap(m):
@@ -47,7 +48,7 @@ def resolve(text, segments):
         if seg is None:
             unknown.append(m.group(1))
             return ""
-        return "[%s]" % fmt_range(seg.start, seg.end)
+        return "[%s]" % seg.where
 
     return _CITE.sub(swap, text), unknown
 

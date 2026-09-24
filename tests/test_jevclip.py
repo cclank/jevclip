@@ -114,7 +114,7 @@ class Subtitles(Temp):
 
     def test_unsupported_suffix(self):
         with self.assertRaises(ValueError):
-            subtitles.parse(write(self.tmp, "a.txt", "hello"))
+            subtitles.parse(write(self.tmp, "a.docx", "hello"))
 
     def test_a_term_broken_at_its_hyphen_joins_back(self):
         # Real subtitles: "confidence-" ends one cue, "gated routing" starts the next.
@@ -124,6 +124,112 @@ class Subtitles(Temp):
     def test_chinese_lines_join_without_spaces_latin_with_one(self):
         self.assertEqual(subtitles.flat("我们来看测试。\n我用一台 MacBook Air，\n跑的是 4-bit\nversion\n"),
                          "我们来看测试。我用一台 MacBook Air，跑的是 4-bit version")
+
+
+SCRIPT = """# 本期提纲
+
+大家好，我是小木头。今天聊聊 Jev。
+
+它的价格是每百万 token 0.042 美元。输出免费！
+它每秒能做大约十次决策。
+
+- 第一点：快
+- 第二点：便宜
+
+好了，这期就到这里，我们下期见。
+"""
+
+
+class Scripts(Temp):
+    def test_a_copied_youtube_transcript_keeps_its_times(self):
+        raw = "0:01\n大家好，我是小木头\n0:03\n这两天在社交媒体上最\n0:08\n9 月 15 日发布\n1:02:03\n最后一句"
+        cues = subtitles.parse(write(self.tmp, "a.txt", raw))
+        self.assertEqual([(c.start, c.text, c.para) for c in cues],
+                         [(1.0, "大家好，我是小木头", None), (3.0, "这两天在社交媒体上最", None),
+                          (8.0, "9 月 15 日发布", None), (3723.0, "最后一句", None)])
+        self.assertEqual(cues[0].end, 3.0)  # runs up to the next line
+        self.assertLess(cues[1].end, 8.0)  # the speaker paused before 0:08, and that gap survives
+
+    def test_timestamps_opening_lines(self):
+        raw = "标题\n[00:00:01] 大家好\n[00:00:04.5] 第二句\n00:10 - 第三句\n0:08 时间倒退的一行是正文"
+        cues = subtitles.parse(write(self.tmp, "a.md", raw))
+        self.assertEqual([(c.start, c.text) for c in cues],
+                         [(1.0, "大家好"), (4.5, "第二句"), (10.0, "第三句0:08 时间倒退的一行是正文")])
+
+    def test_subtitles_saved_as_txt_are_read_as_subtitles(self):
+        cues = subtitles.parse(write(self.tmp, "a.txt", srt([(1, 3.5, "改名的字幕")])))
+        self.assertEqual([(c.start, c.end, c.text) for c in cues], [(1.0, 3.5, "改名的字幕")])
+
+    def test_a_script_without_times_is_cut_by_paragraph_and_sentence(self):
+        cues = subtitles.parse(write(self.tmp, "a.md", SCRIPT))
+        self.assertEqual([(c.para, c.text) for c in cues], [
+            (1, "本期提纲"), (2, "大家好，我是小木头。"), (2, "今天聊聊 Jev。"),
+            (3, "它的价格是每百万 token 0.042 美元。"), (3, "输出免费！"), (3, "它每秒能做大约十次决策。"),
+            (4, "第一点：快"), (4, "第二点：便宜"), (5, "好了，这期就到这里，我们下期见。")])
+        for a, b in zip(cues, cues[1:]):
+            self.assertLessEqual(a.end, b.start)
+
+    def test_latin_sentences_split_but_decimals_stay_whole(self):
+        cues = subtitles.parse(write(self.tmp, "a.txt", "It costs 0.042 dollars. Output is free! v2.3 ships soon"))
+        self.assertEqual([c.text for c in cues], ["It costs 0.042 dollars.", "Output is free!", "v2.3 ships soon"])
+
+    def test_a_script_is_stored_with_paragraph_positions(self):
+        t = self.store.ingest(write(self.tmp, "稿子.md", SCRIPT), target=6.0)
+        self.assertFalse(t.timed)
+        self.assertEqual(t.segments[0].where, "¶1–2")
+        self.assertTrue(all(s.where.startswith("¶") for s in t.segments))
+        self.assertEqual(t.text[t.segments[1].char_start : t.segments[1].char_end], t.segments[1].text)
+
+    def test_a_timed_script_is_stored_as_timed(self):
+        t = self.store.ingest(write(self.tmp, "a.txt", "0:01\n第一句\n0:05\n第二句"))
+        self.assertTrue(t.timed)
+        self.assertEqual(t.segments[0].where, "00:01–00:06")
+
+    def test_a_script_is_judged_and_summarised_but_never_cut(self):
+        script = write(self.tmp, "稿子.md", SCRIPT)
+        transport = scripted({"大家好": answer(kind="smalltalk", substance=0.3),
+                              "下期见": answer(kind="promo", substance=0.2)})
+
+        def writer(url, body, key, timeout):
+            return {"choices": [{"message": {"content": "一句话总结：价格 0.042 美元 [S2]"}}]}
+
+        llm = ChatLLM("https://example.invalid/v1", "k", "m", transport=writer)
+        out = os.path.join(self.tmp, "out")
+        r = pipeline.process(self.store, JevClient(api_key="k", transport=transport),
+                             os.path.join(self.tmp, "no-such-video.mp4"), script, out, llm=llm, target=6.0)
+        self.assertFalse(r["timed"])
+        self.assertEqual((r["clips"], r["reel"]), (0, None))
+        with open(os.path.join(r["folder"], "report.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("文字稿没有时间点", text)
+        self.assertIn("| 片段 | 位置 |", text)
+        self.assertIn("一句话总结：价格 0.042 美元 [¶3]", text)
+        self.assertNotIn("## 高亮视频", text)
+        with open(os.path.join(r["folder"], "segments.json"), encoding="utf-8") as fh:
+            first = json.load(fh)["segments"][0]
+        self.assertEqual((first["start"], first["paragraphs"], first["time"]), (None, [1, 2], "¶1–2"))
+
+    def test_labels_export_gives_paragraph_positions(self):
+        t = self.store.ingest(write(self.tmp, "稿子.md", SCRIPT), target=6.0)
+        rubric.judge(self.store, JevClient(api_key="k", transport=scripted({})), t)
+        path = os.path.join(self.tmp, "segs.jsonl")
+        labels.export(self.store, path)
+        self.assertEqual(labels.load(path)[0]["time"], "¶1–2")
+
+    def test_a_cache_from_before_scripts_is_upgraded(self):
+        path = os.path.join(self.tmp, "old.db")
+        import sqlite3
+        db = sqlite3.connect(path)
+        db.executescript("""CREATE TABLE transcripts(doc_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
+            title TEXT NOT NULL, video TEXT, subtitles TEXT NOT NULL, text TEXT NOT NULL, cues TEXT NOT NULL,
+            segments TEXT NOT NULL, content_hash TEXT NOT NULL, added_at REAL NOT NULL);
+            INSERT INTO transcripts VALUES('old', 1, 't', NULL, 's.srt', '一句\n', '[[0, 2, 1.0, 3.0]]',
+            '[[0, 1]]', 'h', 0);""")
+        db.close()
+        with Store(path) as store:
+            t = store.transcript("old")
+        self.assertTrue(t.timed)
+        self.assertEqual(t.segments[0].where, "00:01–00:03")
 
 
 class Segmenting(unittest.TestCase):
@@ -527,10 +633,15 @@ class Discover(unittest.TestCase):
             os.makedirs(out)
             write(out, "highlights.mp4", "")
             write(out, "highlights.srt", "")
+            write(tmp, "e.mp4", "")
+            write(tmp, "e.txt", "")  # a script with the video's name pairs up
+            write(tmp, "notes.txt", "")  # a stray note on its own does not
             items = pipeline.discover([tmp], exclude=os.path.join(tmp, "jevclip-out"))
             got = {(os.path.basename(v) if v else None, os.path.basename(s) if s else None) for v, s in items}
-        self.assertEqual(got, {("a.mp4", "a.srt"), ("b.mp4", "b.zh-CN.srt"), (None, "c.srt"),
-                               ("d.mov", None), ("lesson.mp4", None), ("lesson.1.mp4", "lesson.1.srt")})
+            explicit = pipeline.discover([os.path.join(tmp, "notes.txt")])
+        self.assertEqual(got, {("a.mp4", "a.srt"), ("b.mp4", "b.zh-CN.srt"), (None, "c.srt"), ("d.mov", None),
+                               ("lesson.mp4", None), ("lesson.1.mp4", "lesson.1.srt"), ("e.mp4", "e.txt")})
+        self.assertEqual([os.path.basename(s) for _, s in explicit], ["notes.txt"])
 
 
 class Labels(Temp):

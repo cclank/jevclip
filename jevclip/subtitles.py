@@ -1,4 +1,4 @@
-"""Subtitles in; time-aligned cues and segments out. No network, no model."""
+"""Subtitles or a plain-text script in; cues and segments out. No network, no model."""
 
 import html
 import json
@@ -19,12 +19,21 @@ PAUSE = 0.8  # a gap this long between cues is a natural break
 LOOKAHEAD = 10.0
 SENTENCE_END = tuple("。！？!?；;….")
 
+SCRIPT_SUFFIXES = (".txt", ".md")
+# A script without timestamps is still cut by length, so its sentences get
+# reading-time positions: characters per second of speech. They size the
+# segments and are never shown as times.
+RATE_CJK = 4.0
+RATE_LATIN = 14.0
+PARA_GAP = 1.0  # a paragraph break counts as a pause
+
 
 @dataclass
 class Cue:
     start: float
     end: float
     text: str
+    para: int = None  # paragraph number in a script without timestamps; None when times are real
 
 
 def fmt_time(t):
@@ -50,18 +59,106 @@ def _seconds(value):
 
 
 def parse(path):
-    """SRT, WebVTT, whisper.cpp JSON (-oj) or a JSON list of
-    {start, end, text} segments. Returns cues in time order."""
+    """SRT, WebVTT, whisper.cpp JSON (-oj), a JSON list of {start, end, text}
+    segments, or a .txt / .md script. Returns cues in order; a script without
+    timestamps gives cues with `para` set and no real times."""
     suffix = os.path.splitext(path)[1].lower()
     with open(path, encoding="utf-8-sig", errors="replace") as fh:
         raw = fh.read()
+    if suffix in SCRIPT_SUFFIXES:
+        return _parse_text(raw)
     if suffix == ".json":
         cues = _parse_json(json.loads(raw))
     elif suffix in (".srt", ".vtt"):
         cues = _parse_blocks(raw)
     else:
-        raise ValueError("%s: expected .srt, .vtt or .json subtitles" % path)
+        raise ValueError("%s: expected .srt, .vtt, .json subtitles or a .txt / .md script" % path)
     return _clean(cues)
+
+
+# A timestamp opening a line: "0:01", "12:34", "1:02:03", "[00:01:23]", "(0:05) …", "00:01 - …"
+_STAMP = re.compile(
+    r"^[\[(（【]?\s*((?:\d{1,2}:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?)\s*[\])）】]?(?:\s*[-–—|:：]\s*|\s+|$)(.*)$"
+)
+_MARKUP = re.compile(r"^(?:#{1,6}\s+|>\s?|[-*+]\s+)")
+_ITEM = re.compile(r"^(?:#{1,6}\s|>|[-*+]\s|\d+[.、)）])")  # a line that starts its own unit
+# After a Chinese stop (and any closing quote), or after a Latin one followed
+# by a space — so 0.042 and v2.3 stay whole.
+_BREAK = re.compile(
+    r"(?<=[。！？!?；;])(?![”’」』\"')）])|(?<=[。！？!?；;][”’」』\"')）])|(?<=[.!?])\s+"
+)
+
+
+def _join(lines):
+    return flat("\n".join(lines))
+
+
+def _parse_text(raw):
+    """Timestamps opening at least two lines, in order, make a timed
+    transcript (YouTube's copied transcript, "[00:01] …"); otherwise it is a
+    script, cut by paragraphs and sentences. Subtitles saved as .txt are
+    read as subtitles."""
+    if re.search(r"\d\s*-->\s*\d", raw):
+        return _clean(_parse_blocks(raw))
+    lines = [line.strip() for line in raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    entries = []
+    for line in lines:
+        m = _STAMP.match(line) if line else None
+        t = _seconds(m.group(1)) if m else None
+        if t is not None and (not entries or t >= entries[-1][0]):
+            entries.append((t, [m.group(2)] if m.group(2).strip() else []))
+        elif line and entries:
+            entries[-1][1].append(line)
+    if len(entries) >= 2:
+        return _timed_text(entries)
+    return _script(raw)
+
+
+def _rate(text):
+    wide = sum(1 for ch in text if _WIDE.match(ch))
+    return RATE_CJK if wide >= 0.3 * max(1, len(text.strip())) else RATE_LATIN
+
+
+def _timed_text(entries):
+    """Copied transcripts give only start times. A line ends at the next
+    start or after its reading time, whichever is sooner, so a pause the
+    speaker left still shows up as a gap."""
+    cues = []
+    for k, (start, lines) in enumerate(entries):
+        text = _join(lines)
+        if not text:
+            continue
+        spoken = max(1.0, len(text) / _rate(text))
+        nxt = entries[k + 1][0] if k + 1 < len(entries) else start + spoken
+        end = min(nxt, start + spoken) if nxt > start else start + spoken
+        cues.append(Cue(start, end, text))
+    return cues
+
+
+def _script(raw):
+    text = raw.replace("\r\n", "\n").replace("\r", "\n")
+    paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if len(paragraphs) <= 1:  # no blank lines: every line is a paragraph
+        paragraphs = [line for line in text.split("\n") if line.strip()]
+    rate = _rate(text)
+    cues, t = [], 0.0
+    for number, paragraph in enumerate(paragraphs, 1):
+        units = []  # wrapped lines join; list items, headings and quotes stand alone
+        for line in (l.strip() for l in paragraph.split("\n")):
+            if not line:
+                continue
+            if _ITEM.match(line) or not units:
+                units.append([_MARKUP.sub("", line)])
+            else:
+                units[-1].append(line)
+        for unit in units:
+            for sentence in (s.strip() for s in _BREAK.split(_join(unit))):
+                if sentence:
+                    spoken = max(0.5, len(sentence) / rate)
+                    cues.append(Cue(t, t + spoken, sentence, number))
+                    t += spoken
+        t += PARA_GAP
+    return cues
 
 
 def _parse_blocks(raw):

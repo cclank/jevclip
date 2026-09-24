@@ -10,7 +10,8 @@ from .llm import LLMError
 from .summary import summarize
 
 VIDEO_SUFFIXES = (".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".flv", ".ts", ".mts")
-SUB_SUFFIXES = (".srt", ".vtt", ".json")
+# Preference order when several sit next to a video; scripts come last.
+SUB_SUFFIXES = (".srt", ".vtt", ".json") + subtitles.SCRIPT_SUFFIXES
 # a.zh.srt, a.zh-CN.vtt, a.wav.srt are subtitles of a.mp4; a.1.srt is not
 _SUB_TAG = re.compile(r"^(?:[a-z]{2,3}(?:[-_][a-z0-9]{2,4})?|chs|cht|wav|mp3|m4a|flac|audio)$", re.I)
 
@@ -44,8 +45,10 @@ def find_video(subs):
 
 def discover(paths, subs=None, exclude=None):
     """(video or None, subtitles or None) pairs. A video with no subtitles
-    comes back with None — reported, never guessed at. `exclude` keeps a
-    previous run's output (its highlight reels) from being picked up."""
+    comes back with None — reported, never guessed at. In a directory a
+    .txt / .md counts only when it has a video's name; on its own it may be
+    any note, so pass it by path. `exclude` keeps a previous run's output
+    (its highlight reels) from being picked up."""
     exclude = os.path.abspath(exclude) if exclude else None
     items, used = [], set()
     for path in paths:
@@ -88,9 +91,9 @@ def process(store, client, video, subs, out_dir, focus=(), policy=None, max_seco
     verdicts = rubric.assess(rubric.judge(store, client, transcript, focus, reuse=reuse), policy)
     spent = {k: client.usage[k] - before[k] for k in before}
 
-    will_cut = bool(cut_video and video)
+    will_cut = bool(cut_video and video and transcript.timed)
     duration = reel.probe_duration(video) if will_cut else None
-    clips = reel.pick(verdicts, max_seconds, duration=duration)
+    clips = reel.pick(verdicts, max_seconds, duration=duration) if transcript.timed else []
     folder = os.path.join(out_dir, transcript.doc_id)
     os.makedirs(folder, exist_ok=True)
 
@@ -124,6 +127,7 @@ def process(store, client, video, subs, out_dir, focus=(), policy=None, max_seco
     return {
         "doc_id": transcript.doc_id,
         "title": transcript.title,
+        "timed": transcript.timed,
         "folder": folder,
         "segments": len(verdicts),
         "kept": sum(1 for v in verdicts if v.keep),
