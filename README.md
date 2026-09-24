@@ -1,5 +1,7 @@
 # jevclip
 
+![Jevclip 视频精华提取项目头图](assets/jevclip-hero.png)
+
 [![Python](https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-2ea44f)](pyproject.toml)
 [![Judge](https://img.shields.io/badge/judge-jev--1.13.0-6f42c1)](https://docs.typesafe.ai)
