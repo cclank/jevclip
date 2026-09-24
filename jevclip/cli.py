@@ -2,7 +2,7 @@ import argparse
 import os
 import sys
 
-from . import labels, pipeline, rubric, subtitles
+from . import labels, pipeline, reel, rubric, subtitles
 from .jev import MODEL, JevClient
 from .llm import ChatLLM
 from .store import Store
@@ -38,8 +38,8 @@ def main(argv=None):
     p.add_argument("--no-cut", action="store_true", help="timeline and summary only")
     p.add_argument("--no-summary", action="store_true", help="skip the summary model")
     p.add_argument("--fast", action="store_true",
-                   help="hardware H.264 (macOS VideoToolbox): larger files, and on Apple Silicon "
-                        "only a little faster, at 1080p and above")
+                   help="hardware H.264, macOS only (VideoToolbox): larger files, and on Apple Silicon "
+                        "only a little faster, at 1080p and above; elsewhere the default encoder is used")
     p.add_argument("--no-reuse", action="store_true", help="call Jev even for segments already judged")
 
     p = sub.add_parser("export", help="judged segments as JSONL with an empty keep/drop label")
@@ -90,6 +90,7 @@ def _run(store, args):
     if not items:
         print("no videos or subtitle files found", file=sys.stderr)
         return 1
+    fast = args.fast and not args.no_cut and _fast_available()
     client = JevClient(model=args.model)
     llm = None if args.no_summary else ChatLLM.from_env()
     policy = rubric.Policy(threshold=args.threshold)
@@ -104,7 +105,7 @@ def _run(store, args):
             try:
                 r = pipeline.process(store, client, video, subs, args.out, focus=args.focus, policy=policy,
                                      max_seconds=args.max_seconds, llm=llm, cut_video=not args.no_cut,
-                                     fast=args.fast, reuse=not args.no_reuse, title=args.title,
+                                     fast=fast, reuse=not args.no_reuse, title=args.title,
                                      target=args.segment_seconds, full=not args.no_full)
             except (ValueError, RuntimeError, OSError) as exc:
                 print("      failed: %s" % exc)
@@ -152,6 +153,16 @@ def _run(store, args):
           % (len(items), u["requests"], u["input_tokens"], u["usd"],
              ", %d failed or skipped" % failed if failed else ""))
     return 1 if failed == len(items) else 0
+
+
+def _fast_available():
+    try:
+        if reel.can_fast():
+            return True
+    except RuntimeError:  # no ffmpeg at all; each video says so when it is cut
+        return False
+    print("--fast 要用 macOS 的 VideoToolbox，这台机器的 ffmpeg 没有，改用默认编码 libx264", file=sys.stderr)
+    return False
 
 
 if __name__ == "__main__":

@@ -486,6 +486,32 @@ class Highlights(unittest.TestCase):
         self.assertEqual((rate(290_000), rate(None), rate(90_000_000)), ("1000000", "1000000", "40000000"))
         self.assertIn("libx264", reel._codec(False, 5_000_000))
 
+    def test_without_videotoolbox_fast_falls_back_with_a_notice(self):
+        from jevclip import cli
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(reel, "encoders", return_value={"libx264", "aac"}), \
+                mock.patch.object(pipeline, "process", side_effect=ValueError("stop here")) as process, \
+                mock.patch("sys.stderr") as err, mock.patch("sys.stdout"):
+            subs = write(tmp, "talk.srt", srt(CUES))
+            cli.main(["--db", os.path.join(tmp, "c.db"), "run", subs, "--fast", "--no-summary"])
+        self.assertFalse(process.call_args.kwargs["fast"])
+        self.assertIn("VideoToolbox", "".join(str(c.args[0]) for c in err.write.call_args_list))
+
+    def test_an_ffmpeg_without_libx264_says_what_to_install(self):
+        with mock.patch.object(reel, "encoders", return_value={"aac", "mpeg4"}), \
+                mock.patch.object(reel, "_tool", return_value="ffmpeg"):
+            with self.assertRaises(RuntimeError) as caught:
+                reel.cut("talk.mp4", [reel.Clip(0, 5, [])], "out.mp4")
+        self.assertIn("apt install ffmpeg", str(caught.exception))
+
+    def test_encoders_are_read_from_ffmpeg(self):
+        listing = (" V..... = Video\n ------\n V....D libx264              libx264 H.264 (codec h264)\n"
+                   " A....D aac                  AAC (Advanced Audio Coding)\n")
+        with mock.patch.object(reel, "_tool", return_value="/x/ffmpeg"), \
+                mock.patch.object(reel, "_run", return_value=listing), mock.patch.dict(reel._ENCODERS, clear=True):
+            self.assertTrue({"libx264", "aac"} <= reel.encoders())
+            self.assertFalse(reel.can_fast())
+
     def test_retimed_subtitles_follow_the_reel(self):
         cues = [subtitles.Cue(10, 14, "a"), subtitles.Cue(14, 18, "b"), subtitles.Cue(40, 44, "c")]
         clips = [reel.Clip(12, 18, []), reel.Clip(40, 44, [], out_start=6.0)]

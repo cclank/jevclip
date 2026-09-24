@@ -6,7 +6,7 @@
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-highlight%20reels-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org)
 [![Input](https://img.shields.io/badge/input-SRT%20%7C%20VTT%20%7C%20whisper%20JSON%20%7C%20TXT%20%7C%20MD-0a7bbb)](#准备输入)
 [![Tests](https://img.shields.io/badge/tests-offline%2C%20no%20API%20key-2ea44f)](#开发)
-[![Tested on](https://img.shields.io/badge/tested%20on-macOS-000000?logo=apple&logoColor=white)](#实测)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-555555)](#安装)
 [![Status](https://img.shields.io/badge/status-alpha-orange)](#门槛怎么定)
 
 把视频里有价值的部分留下来：**Jev 逐段判断字幕或文字稿，代码剪出两个视频——3 分钟的高亮，和只删废话的去水完整版——总结里每一句都能点回原视频的时间点。**
@@ -24,21 +24,29 @@ jevclip run 文字稿.md                               # 只有文字稿也行�
 
 ## 安装
 
-需要三样东西：Python 3.9 以上（macOS 自带的就行）、ffmpeg、一个 [TypeSafe](https://docs.typesafe.ai) 的 API Key。
+macOS 和 Linux 都能用。需要三样东西：Python 3.9 以上、ffmpeg、一个 [TypeSafe](https://docs.typesafe.ai) 的 API Key。
 写总结还要一个 OpenAI 兼容的模型接口；没有也能跑，只是总结换成原文摘录。
 
-**用安装包**，比如内部试用拿到的 `jevclip-0.1.0.zip`：
+**先装 uv 和 ffmpeg**，装过就跳过：
+
+| 系统 | 怎么装 |
+|---|---|
+| macOS | `brew install uv ffmpeg`。macOS 自带的 Python 就够 |
+| Ubuntu、Debian | `sudo apt install ffmpeg`；uv 用 `curl -LsSf https://astral.sh/uv/install.sh \| sh` 或 `pip install uv` |
+| Fedora、CentOS、Rocky、阿里云 Linux 等 | 官方源里的 ffmpeg 不带 libx264，或者根本没有。装 RPM Fusion 的 ffmpeg，或者把[静态编译版](https://johnvansickle.com/ffmpeg/)放进 PATH |
+
+**用安装包**，比如内部试用拿到的 `jevclip-0.1.1.zip`：
 
 ```bash
-unzip jevclip-0.1.0.zip && cd jevclip-0.1.0
-brew install uv ffmpeg                               # 装过就跳过
-uv tool install ./jevclip-0.1.0-py3-none-any.whl     # 不用联网；装好后任意目录直接敲 jevclip
+unzip jevclip-0.1.1.zip && cd jevclip-0.1.1
+uv tool install ./jevclip-0.1.1-py3-none-any.whl     # 有 Python 3.9+ 就不用联网；装好后任意目录直接敲 jevclip
 ```
 
-不想装 uv，用 Python 自带的虚拟环境也行，命令在 `~/.jevclip/bin/jevclip`：
+系统的 Python 低于 3.9 时，比如 CentOS 7、Ubuntu 20.04，uv 会自己下载一个新的；国内下载慢可以设 `UV_PYTHON_INSTALL_MIRROR` 指向镜像。
+不想装 uv，用 Python 自带的虚拟环境也行，命令在 `~/.jevclip/bin/jevclip`。Ubuntu、Debian 要先 `sudo apt install python3-venv`：
 
 ```bash
-python3 -m venv ~/.jevclip && ~/.jevclip/bin/pip install ./jevclip-0.1.0-py3-none-any.whl
+python3 -m venv ~/.jevclip && ~/.jevclip/bin/pip install ./jevclip-0.1.1-py3-none-any.whl
 ```
 
 **用源码**，要改代码的人：
@@ -49,7 +57,7 @@ uv tool install --editable .                         # 改了代码不用重装
 ```
 
 uv 提示 `is not on your PATH` 的话，运行一次 `uv tool update-shell`。
-最后把 key 写进 shell 配置，新开一个终端，`jevclip --help` 能出帮助就装好了：
+最后把 key 写进 shell 配置，新开一个终端，`jevclip --help` 能出帮助就装好了。macOS 默认是 `~/.zshrc`，Linux 一般是 `~/.bashrc`：
 
 ```bash
 echo 'export TYPESAFE_API_KEY=你的key' >> ~/.zshrc
@@ -63,7 +71,7 @@ echo 'export MINIMAX_BASE_URL=https://api.minimax.io MINIMAX_API_KEY=你的key' 
 
 ```bash
 jevclip run 第一期.mp4                    # 同一个文件夹里要有 第一期.srt（或 .vtt / .json / .txt）
-open jevclip-out/第一期-*/report.md        # 先看报告；同一个文件夹里还有 highlights.mp4 和 full.mp4
+open jevclip-out/第一期-*/report.md        # 先看报告，Linux 用 xdg-open 或 less；同一个文件夹里还有 highlights.mp4 和 full.mp4
 jevclip run 视频目录/                      # 批量；已经判断过的段不再花钱
 ```
 
@@ -183,7 +191,7 @@ jevclip run PATH...            # 视频、字幕文件或目录，可以混着�
   --subs FILE --title TEXT     # 单个视频时指定字幕 / 标题
   --no-cut                     # 只出时间线和总结
   --no-summary                 # 不调用总结模型
-  --fast                       # macOS 硬件编码（VideoToolbox）：文件更大，Apple 芯片上只在 1080p 以上略快
+  --fast                       # macOS 硬件编码（VideoToolbox）：文件更大，Apple 芯片上只在 1080p 以上略快；Linux 上自动改用默认编码
   --no-reuse                   # 忽略缓存，强制重新判断
 
 jevclip export segs.jsonl      # 导出已判断的段，等你标注
@@ -201,6 +209,7 @@ jevclip eval segs.jsonl        # 读回标注，推荐门槛
 | `N 段未判断（no_api_key）`，有价值 0 段 | 这个终端里没有 `TYPESAFE_API_KEY`。设好后重跑，只会补判没判断过的段 |
 | `skipped: no subtitles or script next to it` | 视频旁边没有同名字幕。放一个同名的 .srt，或者用 `--subs 字幕文件` 指定 |
 | `failed: ffmpeg not found` | 装 ffmpeg，或者加 `--no-cut` 只出报告 |
+| `failed: this ffmpeg has no libx264 encoder` | 这个 ffmpeg 不带 H.264 编码器，常见于 Fedora 和 RHEL 系。按[安装](#安装)换一个 ffmpeg |
 | 报告里写「未配置总结模型，只给原文摘录」 | 没配总结模型，见[配置](#配置) |
 | 「总结模型调用失败：http_401」 | 总结模型的 key 或接口地址不对 |
 | 改了文件名或 `--title` 后又调用了一遍 Jev | 标题也是题目的一部分，换标题会重新判断；费用很低，见[实测](#实测) |
@@ -301,6 +310,7 @@ VideoToolbox 硬件编码（`--fast`）在 1080p 快约 15%、4K 快约 30%，72
 
 - **"虚假"只能查到一半。** "可疑说法"判断的是这段话有没有说得比它自己给出的依据更满，这是文字本身的性质。
   说法在现实中对不对，Jev 不知道——那需要拿可信资料来对照。
+- **Linux 还没实际跑过。** 代码只用 Python 标准库和 ffmpeg，Linux 的安装说明和编码器检查都按 Linux 的情况写好了，但测试都是在 macOS 上跑的。
 - **只看字幕，看不到画面。** 屏幕演示、PPT 上的信息，口头没说就判断不到。
 - **按段取舍。** 一段 20 秒左右，寒暄和干货混在一段时，高亮和总结不收它，去水完整版也不删它——报告里单独列出，需要的话回原片看。
 - **转写错字会被照字面理解。** 模型名、产品名最容易转错，转写时给一份热词表效果更好。

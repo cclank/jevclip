@@ -173,6 +173,26 @@ def _run(cmd):
     return proc.stdout
 
 
+_ENCODERS = {}
+NO_X264 = ("this ffmpeg has no libx264 encoder. Ubuntu/Debian: apt install ffmpeg; Fedora/RHEL: "
+           "ffmpeg from RPM Fusion; any Linux: a static ffmpeg build, which includes libx264")
+
+
+def encoders():
+    """Names of the encoders this ffmpeg build has ("libx264", "aac", ...)."""
+    ffmpeg = _tool("ffmpeg")
+    if ffmpeg not in _ENCODERS:
+        out = _run([ffmpeg, "-hide_banner", "-encoders"])
+        _ENCODERS[ffmpeg] = {parts[1] for parts in (line.split() for line in out.splitlines())
+                             if len(parts) > 1 and len(parts[0]) == 6}
+    return _ENCODERS[ffmpeg]
+
+
+def can_fast():
+    """--fast needs VideoToolbox, which only a macOS build of ffmpeg has."""
+    return "h264_videotoolbox" in encoders()
+
+
 def probe_duration(path):
     out = _run([_tool("ffprobe"), "-v", "error", "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1", path])
@@ -201,10 +221,16 @@ def cut(video, clips, out_path, fast=False):
     Each clip's real length is measured, so `out_start` — and the re-timed
     subtitles built from it — stay in sync. Returns the reel's length."""
     ffmpeg = _tool("ffmpeg")
-    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    fast = fast and can_fast()
+    if not fast and "libx264" not in encoders():
+        raise RuntimeError(NO_X264)
+    folder = os.path.dirname(os.path.abspath(out_path))
+    os.makedirs(folder, exist_ok=True)
     codec = _codec(fast, probe_bitrate(video) if fast else None)
     offset = 0.0
-    with tempfile.TemporaryDirectory(prefix="jevclip-cut-") as tmp:
+    # Parts go next to the output, not to /tmp: on many Linux systems /tmp is
+    # held in memory, and a full version's parts are about as big as the video.
+    with tempfile.TemporaryDirectory(prefix=".jevclip-cut-", dir=folder) as tmp:
         parts = []
         for i, clip in enumerate(clips):
             part = os.path.join(tmp, "part%04d.mp4" % i)
