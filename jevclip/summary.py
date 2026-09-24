@@ -1,6 +1,7 @@
 """The summary: written by a language model from kept segments only, cited by
 segment id, with every id turned into a timestamp by code — and every number
-and Latin-script name checked against the text it cites."""
+and Latin-script name checked against the text it cites. Every kept segment
+must be cited; the ones a first pass leaves out get a second, narrower one."""
 
 import re
 
@@ -21,12 +22,20 @@ PROMPT = """视频标题：{title}
 
 要求：
 - 一句话总结接在标题后面写，不超过六十个字。
-- 要点写三到八条，每条以“- ”开头，结尾用方括号标出依据的片段编号，例如 [S3] 或 [S3][S7]。
+- 要点按视频顺序写，每条以“- ”开头，结尾用方括号标出依据的片段编号，例如 [S3] 或 [S3][S4]。
+- 每个片段都要至少被一条要点引用，不要遗漏；相邻片段讲同一件事可以合成一条。条数按内容来，不设上限，也不要为了凑数重复。
 - 可以直接用的做法或结论同样每条标出编号；没有就只写一行“无”。
 - 型号、产品名、人名、数字和单位照抄片段原文，不要换成你更熟悉的名称。
 - 不要自己加英文翻译或括号注释；原文是中文的术语就写中文。
 - 片段里没有说出来的结果不要推测，例如“我们来看看它选了哪个”之后没有交代结果，就不要写结果。
 - 只能引用上面出现过的编号。"""
+
+FILL = """视频标题：{title}
+
+下面这些片段在已经写好的总结里还没有提到。请为它们补写要点：每条以“- ”开头，结尾用方括号标出依据的片段编号；相邻片段讲同一件事可以合成一条。只输出这些要点，不要标题和别的内容。
+型号、产品名、人名、数字和单位照抄原文；不要自己加英文翻译或括号注释；片段里没说出来的结果不要推测；只能引用下面出现的编号。
+
+{blocks}"""
 
 _CITE = re.compile(r"\[(S\d+)\]")
 # Latin-script names (GPT-5.6, typesafe-ai/jev, experimental_evaluate) and
@@ -35,6 +44,18 @@ _CITE = re.compile(r"\[(S\d+)\]")
 _FACT = re.compile(r"[A-Za-z]\w*(?:[-./]\w+)*|\d+\.\d+|\d{2,}", re.ASCII)
 _BULLET = re.compile(r"^\s*[-*•]\s*")
 _NONE = re.compile(r"^\s*[-*•]?\s*无[。.]?\s*$")
+_NAMED = re.compile(r"^(一句话总结|要点|可以直接用的做法或结论)\s*[:：]")
+
+
+def _bare(line):
+    return line.strip().strip("#*").strip()
+
+
+def _heading(line):
+    """A section title however it is dressed: "要点：", "**要点：**", "### 做法："."""
+    if not line.strip() or _BULLET.match(line):
+        return False
+    return bool(_NAMED.match(_bare(line))) or _bare(line).endswith((":", "："))
 
 
 def resolve(text, segments):
@@ -110,14 +131,50 @@ def drop_empty_none(text):
     return "\n".join(out)
 
 
+def merge_points(text, extra, order):
+    """Put `extra` bullets into the 要点 section, the whole list in video
+    order (by each bullet's first citation; an uncited bullet keeps its
+    neighbour's place). No 要点 heading: they go at the end under one."""
+    if not extra:
+        return text
+    lines = text.split("\n")
+    heads = [i for i, line in enumerate(lines) if _heading(line)]
+    start = next((i for i in heads if _bare(lines[i]).startswith("要点")), None)
+    if start is None:
+        return text.rstrip() + "\n\n要点：\n" + "\n".join(extra)
+    stop = next((i for i in heads if i > start), len(lines))
+    body = lines[start + 1 : stop]
+    keyed, last = [], -1
+    for n, line in enumerate([l for l in body if _BULLET.match(l)] + list(extra)):
+        ids = [order[c] for c in _CITE.findall(line) if c in order]
+        last = min(ids) if ids else last
+        keyed.append((last, n, line))
+    others = [l for l in body if l.strip() and not _BULLET.match(l)]
+    tail = [""] if stop < len(lines) else []
+    return "\n".join(lines[: start + 1] + others + [l for *_, l in sorted(keyed)] + tail + lines[stop:])
+
+
+def _blocks(verdicts):
+    return "\n\n".join("[%s]（%s）%s" % (v.segment.id, KINDS[v.kind][0], flat(v.segment.text)) for v in verdicts)
+
+
 def summarize(llm, title, verdicts):
-    """(summary, unknown ids, number of lines flagged). No kept segment, no call."""
+    """(summary, unknown ids, number of lines flagged, kept ids never cited).
+    No kept segment, no call."""
     kept = [v for v in verdicts if v.keep]
     if not kept:
-        return None, [], 0
-    blocks = "\n\n".join("[%s]（%s）%s" % (v.segment.id, KINDS[v.kind][0], flat(v.segment.text)) for v in kept)
-    text = drop_empty_none(llm.chat(SYSTEM, PROMPT.format(title=title, blocks=blocks)))
+        return None, [], 0, []
+    text = drop_empty_none(llm.chat(SYSTEM, PROMPT.format(title=title, blocks=_blocks(kept))))
+    cited = set(_CITE.findall(text))
+    missing = [v for v in kept if v.segment.id not in cited]
+    if missing:
+        wanted = {v.segment.id for v in missing}
+        extra = llm.chat(SYSTEM, FILL.format(title=title, blocks=_blocks(missing)))
+        bullets = [l.strip() for l in extra.split("\n") if _BULLET.match(l) and set(_CITE.findall(l)) & wanted]
+        text = merge_points(text, bullets, {v.segment.id: n for n, v in enumerate(verdicts)})
+        cited = set(_CITE.findall(text))
+    uncovered = [v.segment.id for v in kept if v.segment.id not in cited]
     given = {v.segment.id: v.segment for v in kept}
     problems = check(text, {v.segment.id: v.segment for v in verdicts}, title, allowed=given)
     text, unknown = resolve(mark(text, problems), given)
-    return text, unknown, len(problems)
+    return text, unknown, len(problems), uncovered

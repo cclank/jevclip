@@ -109,7 +109,8 @@ def _run(store, args):
             if r["timed"]:
                 line += "（%s）" % subtitles.fmt_time(r["kept_seconds"])
             if r["reel"]:
-                line += " · 高亮 %d 段（%s）" % (r["clips"], subtitles.fmt_time(r["reel_seconds"]))
+                line += " · 高亮 %d 段（%s），含 %d/%d 个有价值片段" % (
+                    r["clips"], subtitles.fmt_time(r["reel_seconds"]), r["reel_segments"], r["kept"])
             elif not r["timed"]:
                 line += " · 文字稿没有时间点，出总结和取舍，不剪视频"
             elif video is None:
@@ -124,6 +125,8 @@ def _run(store, args):
                 extra.append(r["summary_note"])
             if r["unknown_citations"]:
                 extra.append("总结里删掉 %d 处无效引用" % len(r["unknown_citations"]))
+            if r["summary_uncovered"]:
+                extra.append("总结漏了 %d 个有价值片段（报告里列出）" % len(r["summary_uncovered"]))
             if r["flagged"]:
                 extra.append("总结里 %d 行的数字或英文名称在引用处找不到，已标 ⚠" % r["flagged"])
             u = r["usage"]

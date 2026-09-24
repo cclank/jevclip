@@ -475,7 +475,7 @@ class Report(unittest.TestCase):
         for i in range(n):
             seg = Segment("S%d" % (i + 1), i * 20.0, i * 20.0 + 19, 0, 1, "第%d段内容" % (i + 1))
             vs.append(rubric.Verdict(seg, "ok", keep=True, kind="evidence", value=0.5 + i * 0.04, reasons=[]))
-        t = mock.Mock(title="标题")
+        t = mock.Mock(title="标题", timed=True)
         return report.render(t, vs, [], rubric.Policy(), [], {"requests": 0, "usd": 0.0},
                              summary="- 要点 [00:00–00:19]", flagged=flagged)
 
@@ -490,6 +490,24 @@ class Report(unittest.TestCase):
         digest = self.render(3).split("## 要点摘录")[1].split("## 时间线")[0]
         self.assertNotIn("价值最高", digest)
         self.assertEqual(sum(1 for line in digest.splitlines() if line.startswith("- [")), 3)
+
+    def test_coverage_is_stated_under_the_summary(self):
+        t = mock.Mock(title="标题", timed=True)
+        vs = [rubric.Verdict(Segment("S%d" % i, i * 20.0, i * 20.0 + 19, 0, 1, "内容"), "ok", keep=True,
+                             kind="evidence", value=0.8, reasons=[]) for i in (1, 2)]
+        full = report.render(t, vs, [], rubric.Policy(), [], {"requests": 0, "usd": 0.0}, summary="- 要点", uncovered=[])
+        short = report.render(t, vs, [], rubric.Policy(), [], {"requests": 0, "usd": 0.0}, summary="- 要点", uncovered=["S2"])
+        self.assertIn("总结引用了全部 2 个有价值片段", full)
+        self.assertIn("有 1 个有价值片段没进总结**：S2（00:40–00:59）", short)
+
+    def test_the_timeline_marks_what_made_the_reel(self):
+        t = mock.Mock(title="标题", timed=True)
+        vs = [rubric.Verdict(Segment("S%d" % i, i * 20.0, i * 20.0 + 19, 0, 1, "内容%d" % i), "ok", keep=True,
+                             kind="evidence", value=0.8, reasons=[]) for i in (1, 2)]
+        text = report.render(t, vs, [reel.Clip(20, 39, [vs[0]])], rubric.Policy(), [], {"requests": 0, "usd": 0.0})
+        self.assertIn("含 1/2 个有价值片段", text)
+        rows = [l for l in text.splitlines() if l.startswith("| S")]
+        self.assertEqual([r.split("|")[6].strip() for r in rows], ["▶", ""])
 
     def test_flagged_lines_are_announced(self):
         self.assertIn("1 行里的数字或英文名称", self.render(2, flagged=1))
@@ -515,15 +533,15 @@ class Summary(unittest.TestCase):
         llm = ChatLLM("https://example.invalid/v1", "k", "m", transport=transport)
         kept = rubric.Verdict(self.segs["S2"], "ok", keep=True, kind="evidence")
         dropped = rubric.Verdict(Segment("S1", 0, 10, 0, 1, "寒暄"), "ok", keep=False, kind="smalltalk")
-        text, unknown, flagged = summary.summarize(llm, "标题", [dropped, kept])
+        text, unknown, flagged, uncovered = summary.summarize(llm, "标题", [dropped, kept])
         self.assertIn("[S2]", seen[0])
         self.assertNotIn("寒暄", seen[0])
         self.assertEqual(text, "一句话总结：好 [00:11–00:21]")
-        self.assertEqual((unknown, flagged), (["S1"], 0))
+        self.assertEqual((unknown, flagged, uncovered, len(seen)), (["S1"], 0, [], 1))
 
     def test_no_kept_segments_means_no_call(self):
         llm = ChatLLM("https://example.invalid/v1", "k", "m", transport=lambda *a: self.fail("called"))
-        self.assertEqual(summary.summarize(llm, "标题", []), (None, [], 0))
+        self.assertEqual(summary.summarize(llm, "标题", []), (None, [], 0, []))
 
     def test_a_renamed_model_is_flagged_against_the_cited_text(self):
         # The real failure: "GPT-5.6 Terra" came back as "GPT-4o", cited to the right segment.
@@ -543,8 +561,8 @@ class Summary(unittest.TestCase):
         llm = ChatLLM("https://example.invalid/v1", "k", "m", transport=transport)
         kept = rubric.Verdict(Segment("S2", 11, 21, 0, 1, "和 GPT-5.6 Terra 持平，成本是后者的 1/76"), "ok",
                               keep=True, kind="evidence")
-        text, unknown, flagged = summary.summarize(llm, "标题", [kept])
-        self.assertEqual(flagged, 1)
+        text, unknown, flagged, uncovered = summary.summarize(llm, "标题", [kept])
+        self.assertEqual((flagged, uncovered), (1, []))
         self.assertEqual(text, "- 和 GPT-4o 持平 [00:11–00:21] ⚠ 引用处找不到：GPT-4o\n- 成本 1/76 [00:11–00:21]")
 
     def test_a_neighbouring_segment_counts_and_alternatives_are_split(self):
@@ -555,6 +573,43 @@ class Summary(unittest.TestCase):
                 "S20": Segment("S20", 600, 630, 0, 1, "和 GPT-4o 比较")}
         self.assertEqual(summary.check("三种问题：Choice、Score、Noul/Boolean [S7]", segs), {})
         self.assertEqual(summary.check("持平于 GPT-4o [S7]", segs), {0: ["GPT-4o"]})
+
+    def kept(self, n, text):
+        return rubric.Verdict(Segment("S%d" % n, n * 20.0, n * 20.0 + 19, 0, 1, text), "ok", keep=True, kind="evidence")
+
+    def test_segments_the_first_pass_left_out_get_a_second_pass_in_order(self):
+        # The real gap: capped at a few points, the summary skipped a whole section.
+        calls = []
+
+        def writer(url, body, key, timeout):
+            calls.append(body["messages"][1]["content"])
+            if len(calls) == 1:
+                return {"choices": [{"message": {"content": "一句话总结：好\n\n要点：\n- 第一点 [S1]\n- 第三点 [S3]\n\n可以直接用的做法或结论：\n- 做法 [S3]"}}]}
+            return {"choices": [{"message": {"content": "- 第二点 [S2]\n- 顺手引用的旧编号 [S1]"}}]}
+
+        llm = ChatLLM("https://example.invalid/v1", "k", "m", transport=writer)
+        vs = [self.kept(1, "一"), self.kept(2, "二"), self.kept(3, "三")]
+        text, unknown, flagged, uncovered = summary.summarize(llm, "标题", vs)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("[S2]", calls[1])
+        self.assertNotIn("[S1]", calls[1])
+        self.assertEqual(uncovered, [])
+        self.assertEqual(text.split("可以直接用的做法或结论")[0].strip().splitlines()[-3:],
+                         ["- 第一点 [00:20–00:39]", "- 第二点 [00:40–00:59]", "- 第三点 [01:00–01:19]"])
+        self.assertNotIn("顺手引用", text)
+
+    def test_what_is_still_missing_is_reported(self):
+        def writer(url, body, key, timeout):
+            return {"choices": [{"message": {"content": "要点：\n- 第一点 [S1]"}}]}
+
+        llm = ChatLLM("https://example.invalid/v1", "k", "m", transport=writer)
+        self.assertEqual(summary.summarize(llm, "标题", [self.kept(1, "一"), self.kept(2, "二")])[3], ["S2"])
+
+    def test_merging_keeps_video_order_and_uncited_lines_in_place(self):
+        text = "要点：\n- 甲 [S5]\n- 没有引用的补充\n- 丙 [S9]\n\n做法：\n- 丁"
+        merged = summary.merge_points(text, ["- 乙 [S7]", "- 零 [S1]"], {"S1": 1, "S5": 5, "S7": 7, "S9": 9})
+        self.assertEqual(merged, "要点：\n- 零 [S1]\n- 甲 [S5]\n- 没有引用的补充\n- 乙 [S7]\n- 丙 [S9]\n\n做法：\n- 丁")
+        self.assertEqual(summary.merge_points("一句话总结：好", ["- 乙 [S7]"], {"S7": 7}), "一句话总结：好\n\n要点：\n- 乙 [S7]")
 
     def test_a_stray_none_bullet_is_dropped_only_when_there_are_real_items(self):
         text = "可以直接用的做法：\n- 拆成原子问题 [S3]\n- 无\n\n注意事项：\n- 无"

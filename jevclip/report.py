@@ -13,7 +13,7 @@ def _snippet(text, limit=60):
 
 
 def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
-           summary=None, unknown=(), summary_note=None, flagged=0):
+           summary=None, unknown=(), summary_note=None, flagged=0, uncovered=None):
     kept = [v for v in verdicts if v.keep]
     undecided = [v for v in verdicts if v.keep is None]
     out = ["# %s" % transcript.title, ""]
@@ -25,8 +25,10 @@ def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
         chars = sum(len(flat(v.segment.text)) for v in verdicts)
         kept_chars = sum(len(flat(v.segment.text)) for v in kept)
         line = "文字稿约 %d 字 · 有价值 %d/%d 段（约 %d 字）" % (chars, len(kept), len(verdicts), kept_chars)
+    in_reel = {v.segment.id for c in clips for v in c.verdicts}
     if clips:
-        line += " · 高亮 %d 段（%s）" % (len(clips), fmt_time(reel_seconds or sum(c.end - c.start for c in clips)))
+        line += " · 高亮 %d 段（%s），含 %d/%d 个有价值片段" % (
+            len(clips), fmt_time(reel_seconds or sum(c.end - c.start for c in clips)), len(in_reel), len(kept))
     out.append(line)
     cached = sum(1 for v in verdicts if v.reused)
     out.append("Jev：%d 次请求，$%.4f%s%s" % (
@@ -52,6 +54,12 @@ def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
         out.append(summary)
         if unknown:
             out += ["", "> 删掉了 %d 处不存在或未保留的片段引用：%s" % (len(unknown), "、".join(unknown))]
+        if uncovered is not None:
+            where = {v.segment.id: v.segment.where for v in verdicts}
+            out.append("")
+            out.append("> 总结引用了全部 %d 个有价值片段。" % len(kept) if not uncovered else
+                       "> **有 %d 个有价值片段没进总结**：%s" % (
+                           len(uncovered), "、".join("%s（%s）" % (i, where[i]) for i in uncovered)))
     else:
         out.append("（%s）" % (summary_note or "没有达到门槛的片段"))
     out.append("")
@@ -65,16 +73,19 @@ def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
         out.append("（无）")
     out.append("")
 
-    out += ["## 时间线", "", "| 片段 | %s | 类型 | 价值 | 取舍 | 原文 |" % ("时间" if transcript.timed else "位置"),
-            "|---|---|---|---|---|---|"]
+    reel_col = bool(clips)  # which kept segments made the reel, so none goes missing unnoticed
+    out += ["## 时间线", "", "| 片段 | %s | 类型 | 价值 | 取舍 |%s 原文 |" % (
+                "时间" if transcript.timed else "位置", " 高亮 |" if reel_col else ""),
+            "|---|---|---|---|---|%s---|" % ("---|" if reel_col else "")]
     for v in verdicts:
         if v.keep is None:
             verdict, kind, value = "? " + "；".join(v.reasons), "-", "-"
         else:
             verdict = "✓ 保留" if v.keep else "✗ " + "；".join(v.reasons)
             kind, value = KINDS[v.kind][0], "%.2f" % v.value
-        out.append("| %s | %s | %s | %s | %s | %s |" % (
-            v.segment.id, v.segment.where, kind, value, verdict, _snippet(v.segment.text)))
+        mark = (" %s |" % ("▶" if v.segment.id in in_reel else "")) if reel_col else ""
+        out.append("| %s | %s | %s | %s | %s |%s %s |" % (
+            v.segment.id, v.segment.where, kind, value, verdict, mark, _snippet(v.segment.text)))
     out.append("")
 
     if clips:
