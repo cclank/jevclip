@@ -100,12 +100,12 @@ def process(store, client, video, subs, out_dir, focus=(), policy=None, max_seco
         reel_seconds = reel.cut(video, clips, reel_path, fast=fast)
         subtitles.write_srt(reel.retime(transcript.cues, clips), os.path.join(folder, "highlights.srt"))
 
-    summary, unknown, note = None, [], None
+    summary, unknown, flagged, note = None, [], 0, None
     if llm is None:
         note = "未配置总结模型，只给原文摘录"
     else:
         try:
-            summary, unknown = summarize(llm, transcript.title, verdicts)
+            summary, unknown, flagged = summarize(llm, transcript.title, verdicts)
         except LLMError as exc:
             note = "总结模型调用失败：%s" % exc
 
@@ -119,7 +119,7 @@ def process(store, client, video, subs, out_dir, focus=(), policy=None, max_seco
                    for c in clips], fh, ensure_ascii=False, indent=2)
     with open(os.path.join(folder, "report.md"), "w", encoding="utf-8") as fh:
         fh.write(report.render(transcript, verdicts, clips, policy, focus, spent, reel_seconds,
-                               summary, unknown, note))
+                               summary, unknown, note, flagged))
 
     return {
         "doc_id": transcript.doc_id,
@@ -136,6 +136,7 @@ def process(store, client, video, subs, out_dir, focus=(), policy=None, max_seco
         "summary": bool(summary),
         "summary_note": note,
         "unknown_citations": unknown,
+        "flagged": flagged,
         "usage": spent,
         "reused": sum(1 for v in verdicts if v.reused),
     }

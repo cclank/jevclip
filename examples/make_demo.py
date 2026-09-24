@@ -51,7 +51,8 @@ def ts(x):
 t, cues, spans = 0.0, [], []
 for i, (label, name, text) in enumerate(BLOCKS):
     start = t
-    # each block lasts 47-57 s (3.3-4.3 chars/s) so it lands in one 45 s segment
+    # each block lasts 47-57 s (3.3-4.3 chars/s): long enough to be cut into
+    # more than one segment, so a block's label is checked on every piece of it
     total = len(text) / RATE if i == len(BLOCKS) - 1 else min(max(len(text) / RATE, 47.0), 57.0)
     for p in pieces(text):
         d = total * len(p) / len(text)

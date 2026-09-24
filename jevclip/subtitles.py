@@ -6,10 +6,17 @@ import os
 import re
 from dataclasses import dataclass
 
-TARGET = 45.0  # seconds a segment aims for
+# Seconds a segment aims for. 45 s mixed a demo, a waitlist aside and the
+# episode outline into one segment on a real video, and the average dropped
+# the demo; at 20 s each landed in its own segment and was judged right.
+TARGET = 20.0
 MAXIMUM = 90.0
 MINIMUM = 15.0
 PAUSE = 0.8  # a gap this long between cues is a natural break
+# A sentence end is only a fallback break; if a pause follows within this many
+# seconds, the segment runs on to it. Breaking at the full stop left a topic's
+# last sentence ("所以…没必要加内存。") to be judged with the outro after it.
+LOOKAHEAD = 10.0
 SENTENCE_END = tuple("。！？!?；;….")
 
 
@@ -112,12 +119,23 @@ def _clean(cues):
     return out
 
 
+def _pause_soon(cues, j, limit, pause):
+    """Index to break at if a pause occurs before `limit` seconds, else None."""
+    for m in range(j, len(cues)):
+        if cues[m].start > limit:
+            return None
+        if cues[m].start - cues[m - 1].end >= pause:
+            return m
+    return None
+
+
 def segment(cues, target=TARGET, maximum=MAXIMUM, minimum=None, pause=PAUSE):
     """Group whole cues into segments of roughly `target` seconds: break at a
-    pause if there is one, else at a sentence end a little later, else at
-    `maximum`. Never inside a cue. A tail shorter than `minimum` (default a
-    third of the target) joins the segment before it. Returns (first, stop)
-    cue index pairs."""
+    pause if there is one, else at a sentence end a little later — unless a
+    pause comes within LOOKAHEAD, then there — else at `maximum`. Never
+    inside a cue. A tail shorter than `minimum` (default a third of the
+    target) joins the segment before it. Returns (first, stop) cue index
+    pairs."""
     soft = min(maximum, target + 15.0)
     minimum = min(MINIMUM, target / 3.0) if minimum is None else minimum
     out, i, n = [], 0, len(cues)
@@ -129,6 +147,9 @@ def segment(cues, target=TARGET, maximum=MAXIMUM, minimum=None, pause=PAUSE):
             if span >= maximum or (span >= target and gap >= pause):
                 break
             if span >= soft and cues[j - 1].text.endswith(SENTENCE_END):
+                later = _pause_soon(cues, j, cues[j - 1].end + LOOKAHEAD, pause)
+                if later is not None and cues[later - 1].end - start <= maximum:
+                    j = later
                 break
             j += 1
         out.append((i, j))
@@ -144,13 +165,14 @@ _WIDE = re.compile(r"[　-〿㐀-鿿豈-﫿＀-￯]")
 
 def flat(text):
     """Cue lines joined for reading: no space where either side is Chinese,
-    one space between Latin words."""
+    one space between Latin words, none after a hyphen a line broke on
+    ("confidence-" / "gated routing")."""
     out = ""
     for line in text.split("\n"):
         line = line.strip()
         if not line:
             continue
-        if out and not (_WIDE.match(out[-1]) or _WIDE.match(line[0])):
+        if out and not (_WIDE.match(out[-1]) or _WIDE.match(line[0]) or out.endswith("-")):
             out += " "
         out += line
     return out

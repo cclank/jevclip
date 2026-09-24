@@ -120,6 +120,8 @@ def _run(store, args):
                 extra.append(r["summary_note"])
             if r["unknown_citations"]:
                 extra.append("总结里删掉 %d 处无效引用" % len(r["unknown_citations"]))
+            if r["flagged"]:
+                extra.append("总结里 %d 行的数字或英文名称在引用处找不到，已标 ⚠" % r["flagged"])
             u = r["usage"]
             print("      Jev %d 次请求 $%.4f%s → %s/"
                   % (u["requests"], u["usd"], "  · " + "；".join(extra) if extra else "", r["folder"]))

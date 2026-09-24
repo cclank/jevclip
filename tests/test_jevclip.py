@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from jevclip import labels, pipeline, reel, rubric, subtitles, summary
+from jevclip import labels, pipeline, reel, report, rubric, subtitles, summary
 from jevclip.jev import JevClient, JudgeError
 from jevclip.llm import ChatLLM
 from jevclip.store import Segment, Store
@@ -116,6 +116,11 @@ class Subtitles(Temp):
         with self.assertRaises(ValueError):
             subtitles.parse(write(self.tmp, "a.txt", "hello"))
 
+    def test_a_term_broken_at_its_hyphen_joins_back(self):
+        # Real subtitles: "confidence-" ends one cue, "gated routing" starts the next.
+        self.assertEqual(subtitles.flat("官方文档里面的 confidence-\ngated routing 所推荐的"),
+                         "官方文档里面的 confidence-gated routing 所推荐的")
+
     def test_chinese_lines_join_without_spaces_latin_with_one(self):
         self.assertEqual(subtitles.flat("我们来看测试。\n我用一台 MacBook Air，\n跑的是 4-bit\nversion\n"),
                          "我们来看测试。我用一台 MacBook Air，跑的是 4-bit version")
@@ -143,6 +148,12 @@ class Segmenting(unittest.TestCase):
     def test_sentence_end_breaks_when_there_is_no_pause(self):
         spec = [(i * 3.0, i * 3.0 + 3.0, "一句话。" if i == 6 else "半句话") for i in range(20)]
         self.assertEqual(subtitles.segment(self.cues(spec), target=5.0, maximum=60.0)[0], (0, 7))
+
+    def test_a_sentence_end_waits_for_a_pause_just_after_it(self):
+        # A topic's last sentence must not be cut off into whatever follows the pause.
+        spec = [(i * 3.0, i * 3.0 + 3.0, "结论。" if i == 11 else "半句话") for i in range(14)]
+        spec += [(43.2 + i * 3.0, 46.2 + i * 3.0, "新话题") for i in range(10)]
+        self.assertEqual(subtitles.segment(self.cues(spec), target=20.0)[0], (0, 14))
 
     def test_short_tail_merges_into_the_previous_segment(self):
         cues = self.cues([(0, 20, "一"), (21, 41, "二"), (42, 45, "尾巴")])
@@ -304,11 +315,79 @@ class Highlights(unittest.TestCase):
         vs = [self.kept(0, 60, 0.8, standalone=0.1), self.kept(100, 160, 0.8, standalone=0.9)]
         self.assertEqual(reel.pick(vs, max_seconds=60, pad=0)[0].start, 100)
 
+    def test_the_budget_is_filled_by_total_value_not_first_come(self):
+        # Shapes from the real run: greedy took the 82 s and 61 s segments and left 36 s unused.
+        vs = [self.kept(0, 82, 0.9467, 0.62), self.kept(100, 161, 0.99, 0.53),
+              self.kept(163, 214, 0.9767, 0.55), self.kept(300, 355, 0.9833, 0.51)]
+        clips = reel.pick(vs, max_seconds=180, pad=0)
+        self.assertEqual([v.segment.start for c in clips for v in c.verdicts], [100, 163, 300])
+        self.assertLessEqual(sum(c.end - c.start for c in clips), 180)
+
+    def test_a_mid_thought_opening_brings_the_segment_before_it(self):
+        vs = [self.kept(0, 20, 0.6, 0.9), self.kept(21, 41, 0.95, 0.3)]
+        clips = reel.pick(vs, max_seconds=45, pad=0.3)
+        self.assertEqual([(c.start, [v.segment.start for v in c.verdicts]) for c in clips], [(0.0, [0, 21])])
+
+    def test_without_room_for_its_lead_in_it_is_left_out(self):
+        vs = [self.kept(0, 20, 0.6, 0.9), self.kept(21, 41, 0.95, 0.3)]
+        self.assertEqual([v.segment.start for c in reel.pick(vs, max_seconds=25, pad=0) for v in c.verdicts], [0])
+
+    def test_no_lead_in_is_required_from_a_dropped_or_distant_segment(self):
+        dropped = rubric.Verdict(Segment("S0", 0, 20, 0, 1, "x"), "ok", keep=False, value=0.1, standalone=0.9)
+        far = [self.kept(0, 20, 0.2, 0.9), self.kept(30, 50, 0.95, 0.3)]
+        near_dropped = [dropped, self.kept(21, 41, 0.95, 0.3)]
+        self.assertEqual([v.segment.start for c in reel.pick(far, max_seconds=25, pad=0) for v in c.verdicts], [30])
+        self.assertEqual([v.segment.start for c in reel.pick(near_dropped, max_seconds=25, pad=0) for v in c.verdicts], [21])
+
+    def test_a_connective_opening_needs_the_segment_before_it(self):
+        # Jev scored this opening 0.57 standalone on the real video; the words decide it.
+        lead, mid = self.kept(0, 20, 0.6, 0.9), self.kept(21, 41, 0.95, 0.9)
+        mid.segment.text = "而另一个来自于 browser-use"
+        self.assertEqual([v.segment.start for c in reel.pick([lead, mid], max_seconds=25, pad=0) for v in c.verdicts], [0])
+        self.assertEqual([len(c.verdicts) for c in reel.pick([lead, mid], max_seconds=45, pad=0)], [2])
+
+    def test_a_short_pause_plays_through_instead_of_a_jump_cut(self):
+        clips = reel.pick([self.kept(0, 20, 0.9), self.kept(21.5, 40, 0.9)], max_seconds=0, pad=0)
+        self.assertEqual([(c.start, c.end) for c in clips], [(0, 40)])
+
+    def test_padding_counts_against_the_budget(self):
+        # Two 90 s segments fit 180 s exactly, but not with 0.3 s of padding on each side.
+        clips = reel.pick([self.kept(0, 90, 0.9), self.kept(100, 190, 0.8)], max_seconds=180, pad=0.3)
+        self.assertEqual(len(clips), 1)
+        self.assertLessEqual(sum(c.end - c.start for c in clips), 180)
+
     def test_retimed_subtitles_follow_the_reel(self):
         cues = [subtitles.Cue(10, 14, "a"), subtitles.Cue(14, 18, "b"), subtitles.Cue(40, 44, "c")]
         clips = [reel.Clip(12, 18, []), reel.Clip(40, 44, [], out_start=6.0)]
         self.assertEqual([(c.start, c.end, c.text) for c in reel.retime(cues, clips)],
                          [(0, 2, "a"), (2, 6, "b"), (6, 10, "c")])
+
+
+class Report(unittest.TestCase):
+    def render(self, n, flagged=0):
+        vs = []
+        for i in range(n):
+            seg = Segment("S%d" % (i + 1), i * 20.0, i * 20.0 + 19, 0, 1, "第%d段内容" % (i + 1))
+            vs.append(rubric.Verdict(seg, "ok", keep=True, kind="evidence", value=0.5 + i * 0.04, reasons=[]))
+        t = mock.Mock(title="标题")
+        return report.render(t, vs, [], rubric.Policy(), [], {"requests": 0, "usd": 0.0},
+                             summary="- 要点 [00:00–00:19]", flagged=flagged)
+
+    def test_the_digest_lists_the_best_eight_in_order(self):
+        text = self.render(10)
+        digest = text.split("## 要点摘录")[1].split("## 时间线")[0]
+        self.assertIn("价值最高的 8 段", digest)
+        self.assertEqual([line.split("—")[1].strip() for line in digest.splitlines() if line.startswith("- [")],
+                         ["第%d段内容" % i for i in range(3, 11)])
+
+    def test_a_short_digest_lists_everything(self):
+        digest = self.render(3).split("## 要点摘录")[1].split("## 时间线")[0]
+        self.assertNotIn("价值最高", digest)
+        self.assertEqual(sum(1 for line in digest.splitlines() if line.startswith("- [")), 3)
+
+    def test_flagged_lines_are_announced(self):
+        self.assertIn("1 行里的数字或英文名称", self.render(2, flagged=1))
+        self.assertNotIn("数字或英文名称", self.render(2))
 
 
 class Summary(unittest.TestCase):
@@ -330,15 +409,50 @@ class Summary(unittest.TestCase):
         llm = ChatLLM("https://example.invalid/v1", "k", "m", transport=transport)
         kept = rubric.Verdict(self.segs["S2"], "ok", keep=True, kind="evidence")
         dropped = rubric.Verdict(Segment("S1", 0, 10, 0, 1, "寒暄"), "ok", keep=False, kind="smalltalk")
-        text, unknown = summary.summarize(llm, "标题", [dropped, kept])
+        text, unknown, flagged = summary.summarize(llm, "标题", [dropped, kept])
         self.assertIn("[S2]", seen[0])
         self.assertNotIn("寒暄", seen[0])
         self.assertEqual(text, "一句话总结：好 [00:11–00:21]")
-        self.assertEqual(unknown, ["S1"])
+        self.assertEqual((unknown, flagged), (["S1"], 0))
 
     def test_no_kept_segments_means_no_call(self):
         llm = ChatLLM("https://example.invalid/v1", "k", "m", transport=lambda *a: self.fail("called"))
-        self.assertEqual(summary.summarize(llm, "标题", []), (None, []))
+        self.assertEqual(summary.summarize(llm, "标题", []), (None, [], 0))
+
+    def test_a_renamed_model_is_flagged_against_the_cited_text(self):
+        # The real failure: "GPT-5.6 Terra" came back as "GPT-4o", cited to the right segment.
+        segs = {"S5": Segment("S5", 218, 279, 0, 1, "准确率 67.8%\n和 GPT-5.6 Terra 的 67.9% 持平\n成本是后者的 1/76")}
+        text = "- 准确率67.8%与GPT-4o持平，成本为后者的1/76 [S5]\n- 准确率67.8%，和GPT-5.6 Terra持平 [S5]"
+        self.assertEqual(summary.check(text, segs), {0: ["GPT-4o"]})
+
+    def test_uncited_lines_are_held_against_every_segment_and_the_title(self):
+        segs = {"S1": Segment("S1", 0, 9, 0, 1, "TypeSafe AI 发布了 Jev"), "S2": Segment("S2", 9, 20, 0, 1, "输入 0.042 美元")}
+        self.assertEqual(summary.check("Jev 输入 0.042 美元，出自 TypeSafe AI", segs, title="Jev 实测"), {})
+        self.assertEqual(summary.check("Jev 输入 0.05 美元", segs), {0: ["0.05"]})
+
+    def test_flags_are_marked_on_the_line_and_counted(self):
+        def transport(url, body, key, timeout):
+            return {"choices": [{"message": {"content": "- 和 GPT-4o 持平 [S2]\n- 成本 1/76 [S2]"}}]}
+
+        llm = ChatLLM("https://example.invalid/v1", "k", "m", transport=transport)
+        kept = rubric.Verdict(Segment("S2", 11, 21, 0, 1, "和 GPT-5.6 Terra 持平，成本是后者的 1/76"), "ok",
+                              keep=True, kind="evidence")
+        text, unknown, flagged = summary.summarize(llm, "标题", [kept])
+        self.assertEqual(flagged, 1)
+        self.assertEqual(text, "- 和 GPT-4o 持平 [00:11–00:21] ⚠ 引用处找不到：GPT-4o\n- 成本 1/76 [00:11–00:21]")
+
+    def test_a_neighbouring_segment_counts_and_alternatives_are_split(self):
+        # Real false alarm: "Noul/Boolean" cited S7 (Choice, Score) while the words were in S8.
+        segs = {"S7": Segment("S7", 193, 216, 0, 1, "第一种是 Choice\n第二种是 Score"),
+                "S8": Segment("S8", 218, 246, 0, 1, "第三种 Noul\n在 Vercel AI SDK 里它叫 boolean"),
+                "S9": Segment("S9", 249, 279, 0, 1, "输入每 100 万 token 0.042 美元"),
+                "S20": Segment("S20", 600, 630, 0, 1, "和 GPT-4o 比较")}
+        self.assertEqual(summary.check("三种问题：Choice、Score、Noul/Boolean [S7]", segs), {})
+        self.assertEqual(summary.check("持平于 GPT-4o [S7]", segs), {0: ["GPT-4o"]})
+
+    def test_a_stray_none_bullet_is_dropped_only_when_there_are_real_items(self):
+        text = "可以直接用的做法：\n- 拆成原子问题 [S3]\n- 无\n\n注意事项：\n- 无"
+        self.assertEqual(summary.drop_empty_none(text), "可以直接用的做法：\n- 拆成原子问题 [S3]\n\n注意事项：\n- 无")
 
     def test_bare_host_from_env_gets_v1(self):
         env = {"MINIMAX_BASE_URL": "https://api.minimax.io", "MINIMAX_API_KEY": "k"}

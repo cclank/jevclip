@@ -3,6 +3,8 @@
 from .rubric import KINDS
 from .subtitles import flat, fmt_range, fmt_time
 
+DIGEST = 8  # excerpts shown; on a dense video nearly everything is kept
+
 
 def _snippet(text, limit=60):
     text = flat(text)
@@ -11,7 +13,7 @@ def _snippet(text, limit=60):
 
 
 def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
-           summary=None, unknown=(), summary_note=None):
+           summary=None, unknown=(), summary_note=None, flagged=0):
     kept = [v for v in verdicts if v.keep]
     undecided = [v for v in verdicts if v.keep is None]
     length = verdicts[-1].segment.end if verdicts else 0.0
@@ -36,6 +38,8 @@ def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
     out += ["## 总结", ""]
     if summary:
         out.append("> 由总结模型根据保留的片段写成，方括号里的时间点由程序从片段编号换算。")
+        if flagged:
+            out.append("> **%d 行里的数字或英文名称，在它引用的片段和前后相邻片段里都找不到，已在行末标 ⚠，请回原片核对。**" % flagged)
         out.append("")
         out.append(summary)
         if unknown:
@@ -44,8 +48,9 @@ def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
         out.append("（%s）" % (summary_note or "没有达到门槛的片段"))
     out.append("")
 
-    out += ["## 要点摘录（原文）", ""]
-    for v in kept:
+    best = sorted(sorted(kept, key=lambda v: -v.value)[:DIGEST], key=lambda v: v.segment.start)
+    out += ["## 要点摘录（原文%s）" % ("，价值最高的 %d 段" % DIGEST if len(kept) > DIGEST else ""), ""]
+    for v in best:
         out.append("- [%s] %s · %.2f — %s" % (
             fmt_range(v.segment.start, v.segment.end), KINDS[v.kind][0], v.value, _snippet(v.segment.text, 90)))
     if not kept:
