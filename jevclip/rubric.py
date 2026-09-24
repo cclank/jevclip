@@ -61,6 +61,7 @@ class Verdict:
     focus: float = None
     value: float = None
     keep: bool = None  # None = not judged, which is not the same as "no value"
+    skip: bool = None  # taken out of the full version; None = not judged, so it stays
     reasons: list = field(default_factory=list)
 
     @property
@@ -76,6 +77,12 @@ class Policy:
     junk_limit: float = 0.5
     hype_limit: float = 0.6
     focus_min: float = 0.5
+    # The full version keeps everything a viewer could miss. It takes out a
+    # dropped segment only when it carries less information than this (0–3:
+    # below 1.5 is "nothing" or "platitudes"), is this surely an ad, or is off
+    # every focus. A greeting that also gives the release date stays.
+    skip_substance: float = 1.5
+    skip_promo: float = 0.8
 
 
 def questions(focus=()):
@@ -180,7 +187,7 @@ def assess(verdicts, policy=None):
     for v in verdicts:
         v.reasons = []
         if v.status != "ok":
-            v.keep, v.value = None, None
+            v.keep, v.value, v.skip = None, None, None
             v.reasons.append("未判断（%s）" % v.error_code)
             continue
         a = v.answers
@@ -198,6 +205,8 @@ def assess(verdicts, policy=None):
         hype = v.hype >= policy.hype_limit
         off_topic = v.focus is not None and v.focus < policy.focus_min
         v.keep = v.value >= policy.threshold and not (junk or hype or off_topic)
+        v.skip = not v.keep and (v.substance < policy.skip_substance or off_topic
+                                 or float(probs.get("promo", 0.0)) >= policy.skip_promo)
         if v.keep:
             continue
         if junk:

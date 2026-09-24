@@ -28,13 +28,17 @@ def main(argv=None):
     p.add_argument("--out", default="jevclip-out", help="output folder (default ./jevclip-out)")
     p.add_argument("--max-seconds", type=float, default=180.0,
                    help="highlight reel budget in seconds; 0 keeps every valuable segment")
+    p.add_argument("--no-full", action="store_true",
+                   help="skip full.mp4, the whole video with only the surely worthless segments taken out")
     p.add_argument("--threshold", type=float, default=rubric.Policy.threshold,
                    help="minimum value to keep a segment (provisional default)")
     p.add_argument("--segment-seconds", type=float, default=subtitles.TARGET)
     p.add_argument("--model", default=MODEL)
     p.add_argument("--no-cut", action="store_true", help="timeline and summary only")
     p.add_argument("--no-summary", action="store_true", help="skip the summary model")
-    p.add_argument("--fast", action="store_true", help="hardware H.264 (macOS VideoToolbox)")
+    p.add_argument("--fast", action="store_true",
+                   help="hardware H.264 (macOS VideoToolbox): larger files, and on Apple Silicon "
+                        "only a little faster, at 1080p and above")
     p.add_argument("--no-reuse", action="store_true", help="call Jev even for segments already judged")
 
     p = sub.add_parser("export", help="judged segments as JSONL with an empty keep/drop label")
@@ -100,7 +104,7 @@ def _run(store, args):
                 r = pipeline.process(store, client, video, subs, args.out, focus=args.focus, policy=policy,
                                      max_seconds=args.max_seconds, llm=llm, cut_video=not args.no_cut,
                                      fast=args.fast, reuse=not args.no_reuse, title=args.title,
-                                     target=args.segment_seconds)
+                                     target=args.segment_seconds, full=not args.no_full)
             except (ValueError, RuntimeError, OSError) as exc:
                 print("      failed: %s" % exc)
                 failed += 1
@@ -108,14 +112,20 @@ def _run(store, args):
             line = "      %d 段 → 有价值 %d 段" % (r["segments"], r["kept"])
             if r["timed"]:
                 line += "（%s）" % subtitles.fmt_time(r["kept_seconds"])
-            if r["reel"]:
-                line += " · 高亮 %d 段（%s），含 %d/%d 个有价值片段" % (
-                    r["clips"], subtitles.fmt_time(r["reel_seconds"]), r["reel_segments"], r["kept"])
-            elif not r["timed"]:
+            if not r["timed"]:
                 line += " · 文字稿没有时间点，出总结和取舍，不剪视频"
             elif video is None:
                 line += " · 只有字幕，未剪视频"
             print(line)
+            if r["reel"]:
+                print("      高亮 %d 段（%s），含 %d/%d 个有价值片段 → highlights.mp4" % (
+                    r["clips"], subtitles.fmt_time(r["reel_seconds"]), r["reel_segments"], r["kept"]))
+            if r["full"]:
+                print("      去水完整版 %s，删掉 %d 段（%s） → full.mp4" % (
+                    subtitles.fmt_time(r["full_seconds"]), r["full_removed"],
+                    subtitles.fmt_time(r["full_removed_seconds"])))
+            elif r["full_note"]:
+                print("      去水完整版：%s" % r["full_note"])
             extra = []
             if r["reused"]:
                 extra.append("%d 段读缓存" % r["reused"])
@@ -125,6 +135,8 @@ def _run(store, args):
                 extra.append(r["summary_note"])
             if r["unknown_citations"]:
                 extra.append("总结里删掉 %d 处无效引用" % len(r["unknown_citations"]))
+            if r["full_between"]:
+                extra.append("%d 段没进总结但有具体内容，留在完整版里（报告里列出）" % len(r["full_between"]))
             if r["summary_uncovered"]:
                 extra.append("总结漏了 %d 个有价值片段（报告里列出）" % len(r["summary_uncovered"]))
             if r["flagged"]:

@@ -391,6 +391,24 @@ class Policy(unittest.TestCase):
     def test_any_matching_focus_is_enough(self):
         self.assertTrue(self.verdict(kind="method", substance=2.8, focus=(0.1, 0.9)).keep)
 
+    def test_the_full_version_takes_out_only_what_is_surely_worthless(self):
+        # the real video's opening: a greeting, then the release date and the Hacker News score
+        mixed = self.verdict(kind="smalltalk", substance=1.98)
+        self.assertEqual((mixed.keep, mixed.skip), (False, False))
+        self.assertTrue(self.verdict(kind="smalltalk", substance=0.3).skip)
+        self.assertTrue(self.verdict(kind="promo", substance=2.2).skip)  # an ad, however detailed
+        self.assertFalse(self.verdict(kind="insight", substance=2.8, hype=0.85).skip)  # flagged, not empty
+        self.assertTrue(self.verdict(kind="method", substance=2.8, focus=(0.1, 0.2)).skip)
+        self.assertFalse(self.verdict(kind="evidence", substance=2.7).skip)
+        undecided = rubric.assess([rubric.Verdict(Segment("S1", 0.0, 30.0, 0, 10, "文本"), "error", error_code="timeout")])[0]
+        self.assertIsNone(undecided.skip)
+
+    def test_a_mild_plug_inside_real_content_stays(self):
+        v = rubric.assess([rubric.Verdict(Segment("S1", 0.0, 30.0, 0, 10, "文本"), "ok", dict(
+            answer(kind="method", substance=2.4), kind={"type": "choice", "choice": "method", "confidence": 0.5,
+                                                       "probabilities": {"method": 0.5, "promo": 0.5}}))])[0]
+        self.assertEqual((v.keep, v.skip), (False, False))
+
     def test_threshold_changes_without_calling_jev_again(self):
         v = self.verdict(kind="explain", substance=1.8)
         self.assertTrue(rubric.assess([v], rubric.Policy(threshold=0.5))[0].keep)
@@ -462,11 +480,58 @@ class Highlights(unittest.TestCase):
         self.assertEqual(len(clips), 1)
         self.assertLessEqual(sum(c.end - c.start for c in clips), 180)
 
+    def test_hardware_encoding_follows_the_source_bit_rate(self):
+        rate = lambda bitrate: reel._codec(True, bitrate)[reel._codec(True, bitrate).index("-b:v") + 1]
+        self.assertEqual(rate(5_000_000), "6000000")
+        self.assertEqual((rate(290_000), rate(None), rate(90_000_000)), ("1000000", "1000000", "40000000"))
+        self.assertIn("libx264", reel._codec(False, 5_000_000))
+
     def test_retimed_subtitles_follow_the_reel(self):
         cues = [subtitles.Cue(10, 14, "a"), subtitles.Cue(14, 18, "b"), subtitles.Cue(40, 44, "c")]
         clips = [reel.Clip(12, 18, []), reel.Clip(40, 44, [], out_start=6.0)]
         self.assertEqual([(c.start, c.end, c.text) for c in reel.retime(cues, clips)],
                          [(0, 2, "a"), (2, 6, "b"), (6, 10, "c")])
+
+
+class Trimming(unittest.TestCase):
+    """The full version: everything except what was judged not worth keeping."""
+
+    def seg(self, start, end, state):
+        """state: "keep", "skip" (surely worthless), "drop" (not for the reel, not worthless) or None."""
+        keep = {"keep": True, "skip": False, "drop": False, None: None}[state]
+        skip = {"keep": False, "skip": True, "drop": False, None: None}[state]
+        return rubric.Verdict(Segment("S%d" % int(start), start, end, 0, 1, "x"), "ok", keep=keep, skip=skip, value=0.8)
+
+    def spans(self, verdicts, duration=100.0):
+        return [(round(c.start, 2), round(c.end, 2)) for c in reel.trim(verdicts, pad=0.3, duration=duration)]
+
+    def test_only_what_is_surely_worthless_is_taken_out(self):
+        vs = [self.seg(0, 20, "keep"), self.seg(21, 40, "skip"), self.seg(41, 60, None), self.seg(61, 80, "drop"),
+              self.seg(81, 95, "keep")]
+        self.assertEqual(self.spans(vs), [(0.0, 20.3), (40.7, 100.0)])  # undecided and merely dropped stay
+        self.assertEqual([v.segment.id for v in reel.removed(vs, reel.trim(vs, duration=100.0))], ["S21"])
+
+    def test_a_long_stretch_without_speech_between_kept_segments_stays(self):
+        self.assertEqual(self.spans([self.seg(0, 20, "keep"), self.seg(50, 70, "keep")]), [(0.0, 100.0)])
+
+    def test_a_short_pause_goes_with_the_cut_a_long_one_stays(self):
+        short = [self.seg(0, 20, "keep"), self.seg(21, 40, "skip"), self.seg(41, 60, "keep")]
+        long = [self.seg(0, 20, "keep"), self.seg(30, 40, "skip"), self.seg(50, 60, "keep")]
+        self.assertEqual(self.spans(short), [(0.0, 20.3), (40.7, 100.0)])
+        self.assertEqual(self.spans(long), [(0.0, 30.0), (40.0, 100.0)])
+
+    def test_the_opening_and_ending_go_with_the_first_and_last_segment(self):
+        self.assertEqual(self.spans([self.seg(8, 20, "keep"), self.seg(21, 90, "keep")]), [(0.0, 100.0)])
+        self.assertEqual(self.spans([self.seg(8, 20, "skip"), self.seg(21, 50, "keep"), self.seg(51, 90, "skip")]),
+                         [(20.7, 50.3)])
+
+    def test_a_removal_too_short_for_a_cut_plays_through(self):
+        vs = [self.seg(0, 20, "keep"), self.seg(20.2, 21.0, "skip"), self.seg(21.2, 40, "keep")]
+        self.assertEqual(self.spans(vs), [(0.0, 100.0)])
+        self.assertEqual(reel.removed(vs, reel.trim(vs, duration=100.0)), [])
+
+    def test_all_worthless_is_nothing(self):
+        self.assertEqual(reel.trim([self.seg(0, 20, "skip"), self.seg(21, 40, "skip")], duration=50.0), [])
 
 
 class Report(unittest.TestCase):
@@ -508,6 +573,25 @@ class Report(unittest.TestCase):
         self.assertIn("含 1/2 个有价值片段", text)
         rows = [l for l in text.splitlines() if l.startswith("| S")]
         self.assertEqual([r.split("|")[6].strip() for r in rows], ["▶", ""])
+
+    def test_the_full_version_lists_what_it_took_out_and_what_it_kept_back(self):
+        t = mock.Mock(title="标题", timed=True)
+        vs = [rubric.Verdict(Segment("S%d" % i, (i - 1) * 20.0, (i - 1) * 20.0 + 19, 0, 1, "内容%d" % i), "ok",
+                             keep=i not in (2, 4), skip=i == 2, kind="evidence", value=0.8, substance=2.0,
+                             reasons={2: ["寒暄过渡 0.93"], 4: ["寒暄过渡 0.57"]}.get(i, [])) for i in range(1, 6)]
+        full = [reel.Clip(0, 19.3, [vs[0]]), reel.Clip(39.7, 100.0, vs[2:], out_start=19.3)]
+        text = report.render(t, vs, [], rubric.Policy(), [], {"requests": 0, "usd": 0.0}, duration=100.0,
+                             full_clips=full, full_seconds=79.6, full_removed=[vs[1]], full_between=[vs[3]])
+        self.assertIn("去水完整版 01:19：只删掉 1 段没用的（共 00:20）", text)
+        section = text.split("## 去水完整版")[1]
+        self.assertIn("| S2 | 00:20–00:39 | 寒暄过渡 0.93 | 内容2 |", section)
+        self.assertIn("| 00:19 | 00:39–01:40 | S3–S5 |", section)
+        self.assertIn("| S4 | 01:00–01:19 | 寒暄过渡 0.57 | 2.0 | 内容4 |", section.split("但留在完整版里")[1])
+        note = report.render(t, vs, [], rubric.Policy(), [], {"requests": 0, "usd": 0.0},
+                             full_note="没有要删的片段，去水完整版就是原片", full_between=[vs[3]])
+        self.assertIn("去水完整版：没有要删的片段", note)
+        self.assertIn("| S4 |", note.split("## 去水完整版")[1])
+        self.assertNotIn("| 完整版中 |", note)
 
     def test_flagged_lines_are_announced(self):
         self.assertIn("1 行里的数字或英文名称", self.render(2, flagged=1))
@@ -806,6 +890,67 @@ class Cutting(unittest.TestCase):
         self.assertIn("✗ 推广求关注", text)
         self.assertIn("未配置总结模型", text)
 
+    def test_the_full_version_takes_out_only_what_was_judged_worthless(self):
+        # Block 2 has no subtitles (a silent demo); 讲解 gets a broken answer (undecided).
+        store = Store()
+        self.addCleanup(store.close)
+        subs = write(self.tmp.name, "demo.srt", srt([c for c in CUES if "广告" not in c[2]]))
+        broken = answer()
+        del broken["hype"]
+        transport = scripted({"寒暄": answer(kind="smalltalk", substance=0.3),
+                              "空话": answer(kind="filler", substance=0.4),
+                              "讲解": broken})
+        out = os.path.join(self.tmp.name, "out-full")
+        r = pipeline.process(store, JevClient(api_key="k", transport=transport), self.video, subs, out,
+                             max_seconds=0, target=9.0)
+        self.assertEqual((r["kept"], r["undecided"], r["full_removed"]), (2, 1, 2))
+
+        # highlights: 数据 and 方法 only; full: 数据, the silent demo, 方法, then the undecided 讲解
+        self.assertEqual([self.closest(self.color_at(r["reel"], t)) for t in (1.0, 12.0)], [1, 3])
+        self.assertAlmostEqual(r["full_seconds"], (43.3 - 10.7) + (66.0 - 54.7), delta=0.4)
+        self.assertAlmostEqual(reel.probe_duration(r["full"]), r["full_seconds"], delta=0.15)
+        self.assertEqual([self.closest(self.color_at(r["full"], t)) for t in (1.0, 9.5, 12.0, 21.0, 24.0, 31.0, 34.0, 42.0)],
+                         [1, 1, 2, 2, 3, 3, 5, 5])
+
+        with open(os.path.join(r["folder"], "full.json"), encoding="utf-8") as fh:
+            clips = json.load(fh)
+        self.assertEqual([c["segments"] for c in clips], [["S2", "S3"], ["S5"]])
+        cues = subtitles.parse(os.path.join(r["folder"], "full.srt"))
+        self.assertEqual([c.text[:3] for c in cues], ["数据块", "数据块", "方法块", "方法块", "讲解块", "讲解块"])
+        self.assertAlmostEqual(cues[4].start, clips[1]["out_start"] + 0.3, delta=0.35)
+        with open(os.path.join(r["folder"], "report.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("## 去水完整版", text)
+        self.assertIn("| S1 | 00:00–00:10 | 寒暄过渡", text)
+
+    def test_a_rerun_with_nothing_to_take_out_removes_the_old_copy(self):
+        subs = os.path.join(self.tmp.name, "talk.srt")
+        out = os.path.join(self.tmp.name, "out-rerun")
+        greeting = {"寒暄": answer(kind="smalltalk", substance=0.3)}
+
+        def run(by_text, **kw):
+            store = Store()  # a fresh cache each time, so the new answers are used
+            self.addCleanup(store.close)
+            transport = by_text if callable(by_text) else scripted(by_text)
+            return pipeline.process(store, JevClient(api_key="k", transport=transport), self.video, subs,
+                                    out, max_seconds=20, target=9.0, **kw)
+
+        def outage(payload, api_key, timeout):
+            raise JudgeError("timeout")
+
+        first = run(greeting)
+        self.assertEqual(first["full_removed"], 1)
+        self.assertTrue(os.path.exists(first["full"]))
+        skipped = run(greeting, full=False)  # --no-full leaves an earlier copy alone
+        self.assertEqual((skipped["full"], skipped["full_note"]), (None, None))
+        self.assertTrue(os.path.exists(first["full"]))
+        failed = run(outage)  # nothing judged: earlier videos stay
+        self.assertEqual((failed["undecided"], failed["full"], failed["full_note"]), (6, None, "没有判断结果，未出去水完整版"))
+        self.assertTrue(os.path.exists(first["full"]) and os.path.exists(first["reel"]))
+        again = run({})
+        self.assertEqual((again["kept"], again["full"], again["full_note"]), (6, None, "没有要删的片段，去水完整版就是原片"))
+        self.assertFalse(os.path.exists(first["full"]))
+        self.assertTrue(os.path.exists(again["reel"]))
 
 if __name__ == "__main__":
     unittest.main()

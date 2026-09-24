@@ -12,13 +12,24 @@ def _snippet(text, limit=60):
     return text.replace("|", "\\|")
 
 
+def _span(clip):
+    """S3–S9 for a run of segments, S3 S7 when they are not consecutive."""
+    ids = [v.segment.id for v in clip.verdicts]
+    nums = [int(i[1:]) for i in ids if i[1:].isdigit()]
+    if len(ids) > 2 and len(nums) == len(ids) and nums == list(range(nums[0], nums[0] + len(nums))):
+        return "%s–%s" % (ids[0], ids[-1])
+    return " ".join(ids)
+
+
 def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
-           summary=None, unknown=(), summary_note=None, flagged=0, uncovered=None):
+           summary=None, unknown=(), summary_note=None, flagged=0, uncovered=None,
+           full_clips=None, full_seconds=None, full_removed=(), full_note=None, duration=None,
+           full_between=()):
     kept = [v for v in verdicts if v.keep]
     undecided = [v for v in verdicts if v.keep is None]
     out = ["# %s" % transcript.title, ""]
     if transcript.timed:
-        length = verdicts[-1].segment.end if verdicts else 0.0
+        length = duration or (verdicts[-1].segment.end if verdicts else 0.0)
         kept_seconds = sum(v.segment.end - v.segment.start for v in kept)
         line = "时长 %s · 有价值 %d/%d 段（%s）" % (fmt_time(length), len(kept), len(verdicts), fmt_time(kept_seconds))
     else:
@@ -30,6 +41,12 @@ def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
         line += " · 高亮 %d 段（%s），含 %d/%d 个有价值片段" % (
             len(clips), fmt_time(reel_seconds or sum(c.end - c.start for c in clips)), len(in_reel), len(kept))
     out.append(line)
+    if full_clips:
+        out.append("去水完整版 %s：只删掉 %d 段没用的（共 %s），其余原样保留" % (
+            fmt_time(full_seconds or sum(c.end - c.start for c in full_clips)), len(full_removed),
+            fmt_time(max(0.0, length - (full_seconds or sum(c.end - c.start for c in full_clips))))))
+    elif full_note:
+        out.append("去水完整版：%s" % full_note)
     cached = sum(1 for v in verdicts if v.reused)
     out.append("Jev：%d 次请求，$%.4f%s%s" % (
         usage["requests"], usage["usd"],
@@ -95,6 +112,30 @@ def render(transcript, verdicts, clips, policy, focus, usage, reel_seconds=None,
                 fmt_time(clip.out_start), fmt_range(clip.start, clip.end),
                 " ".join(v.segment.id for v in clip.verdicts)))
         out.append("")
+
+    if full_clips or full_note:
+        out += ["## 去水完整版", ""]
+        if full_clips:
+            out += ["full.mp4 只删掉下面 %d 段：信息密度不到 %.1f/3、明确是广告（≥ %.2f），或与关注点无关。"
+                    "没有字幕的画面、片头片尾和未判断的片段都保留；删点两边不到 2 秒的停顿一起删，"
+                    "更长的空白可能是画面演示，保留。" % (len(full_removed), policy.skip_substance, policy.skip_promo),
+                    "", "| 片段 | 原视频 | 删掉的原因 | 原文 |", "|---|---|---|---|"]
+            for v in full_removed:
+                out.append("| %s | %s | %s | %s |" % (
+                    v.segment.id, v.segment.where, "；".join(v.reasons), _snippet(v.segment.text)))
+            out += ["", "| 完整版中 | 原视频 | 片段 |", "|---|---|---|"]
+            for clip in full_clips:
+                out.append("| %s | %s | %s |" % (fmt_time(clip.out_start), fmt_range(clip.start, clip.end), _span(clip)))
+        else:
+            out.append("%s。" % full_note)
+        if full_between:
+            out += ["", "下面 %d 段没进高亮和总结，但留在完整版里：它们判为寒暄、可疑或价值不够，"
+                        "可信息密度有 %.1f/3 以上，整段删掉会漏信息。" % (len(full_between), policy.skip_substance),
+                    "", "| 片段 | 原视频 | 没进总结的原因 | 信息密度 | 原文 |", "|---|---|---|---|---|"]
+            for v in full_between:
+                out.append("| %s | %s | %s | %.1f | %s |" % (
+                    v.segment.id, v.segment.where, "；".join(v.reasons), v.substance, _snippet(v.segment.text)))
+        out.append("")
     return "\n".join(out)
 
 
@@ -109,6 +150,7 @@ def segment_record(v):
         "text": v.segment.text,
         "status": v.status,
         "keep": v.keep,
+        "skip": v.skip,  # taken out of the full version
         "reasons": v.reasons,
     }
     if v.status == "ok":

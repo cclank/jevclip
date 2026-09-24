@@ -1,4 +1,8 @@
-"""Which kept segments make the highlight reel, and cutting it with ffmpeg."""
+"""Which segments make the two videos, and cutting them with ffmpeg.
+
+The highlight reel (`pick`) is the best few minutes, whole segments only. The
+full version (`trim`) is the whole video with only the segments judged surely
+worthless taken out, so nothing a viewer could miss is left behind."""
 
 import math
 import os
@@ -12,6 +16,7 @@ from .subtitles import Cue
 
 LEAD_IN = 0.5  # below this "standalone", a segment is only shown after the one before it
 ADJACENT = 3.0  # seconds; a segment further back than this is not its lead-in
+MIN_CUT = 1.0  # seconds; taking out less than this is not worth a jump cut
 # Openings that only make sense after what came before. On a real narrated
 # video Jev scored "而另一个来自于 browser-use" and "第二个场景" 0.56-0.57
 # standalone — too close to 0.5 to separate — while the words say it plainly.
@@ -56,6 +61,57 @@ def pick(verdicts, max_seconds=180.0, pad=0.3, gap=2.0, duration=None):
         else:
             clips.append(Clip(start, end, [v]))
     return clips
+
+
+def trim(verdicts, pad=0.3, gap=2.0, duration=None):
+    """The full version: the whole video minus the segments judged surely
+    worthless (`skip`, see rubric.Policy), as clips in order.
+
+    A segment dropped from the reel for being partly small talk stays, and so
+    does an undecided one. So does everything between two segments that stay,
+    however long — a demo with no narration has no subtitles to judge. Beside
+    a removed segment, a pause shorter than `gap` goes with it; a longer
+    stretch without speech may be on-screen content and stays. The opening
+    and the ending stay with the first and last segment."""
+    order = sorted(verdicts, key=lambda v: v.segment.start)
+    if not order:
+        return []
+    last_second = duration or order[-1].segment.end + pad
+    clips, i = [], 0
+    while i < len(order):
+        if order[i].skip:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(order) and not order[j + 1].skip:
+            j += 1
+        first, last = order[i].segment, order[j].segment
+        if i == 0:
+            start = 0.0
+        else:
+            before = order[i - 1].segment.end
+            start = before if first.start - before > gap else first.start - pad
+        if j == len(order) - 1:
+            end = last_second
+        else:
+            after = order[j + 1].segment.start
+            end = after if after - last.end > gap else last.end + pad
+        start, end = max(0.0, start), min(end, last_second)
+        if clips and start - clips[-1].end < MIN_CUT:
+            clips[-1].end = end
+            clips[-1].verdicts += order[i : j + 1]
+        else:
+            clips.append(Clip(start, end, order[i : j + 1]))
+        i = j + 1
+    return clips
+
+
+def removed(verdicts, clips):
+    """Segments a set of clips leaves out: those whose middle no clip plays."""
+    def played(seg):
+        middle = (seg.start + seg.end) / 2
+        return any(c.start <= middle <= c.end for c in clips)
+    return [v for v in verdicts if not played(v.segment)]
 
 
 def _needs_previous(order, i):
@@ -123,9 +179,20 @@ def probe_duration(path):
     return float(out.strip())
 
 
-def _codec(fast):
+def probe_bitrate(path):
+    """The video stream's bit rate, else the whole file's; None if unknown."""
+    out = _run([_tool("ffprobe"), "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=bit_rate:format=bit_rate", "-of", "default=noprint_wrappers=1:nokey=1", path])
+    rates = [int(x) for x in out.split() if x.isdigit() and int(x) > 0]
+    return rates[0] if rates else None
+
+
+def _codec(fast, bitrate=None):
     if fast:
-        return ["-c:v", "h264_videotoolbox", "-b:v", "10M", "-pix_fmt", "yuv420p"]
+        # VideoToolbox is rate-controlled: follow the source rather than a fixed
+        # 10 Mb/s, which made a 720p talk about ten times its original size.
+        rate = min(max(int((bitrate or 0) * 1.2), 1_000_000), 40_000_000)
+        return ["-c:v", "h264_videotoolbox", "-b:v", str(rate), "-pix_fmt", "yuv420p"]
     return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
 
 
@@ -135,6 +202,7 @@ def cut(video, clips, out_path, fast=False):
     subtitles built from it — stay in sync. Returns the reel's length."""
     ffmpeg = _tool("ffmpeg")
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    codec = _codec(fast, probe_bitrate(video) if fast else None)
     offset = 0.0
     with tempfile.TemporaryDirectory(prefix="jevclip-cut-") as tmp:
         parts = []
@@ -142,7 +210,7 @@ def cut(video, clips, out_path, fast=False):
             part = os.path.join(tmp, "part%04d.mp4" % i)
             _run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
                   "-ss", "%.3f" % clip.start, "-i", video, "-t", "%.3f" % (clip.end - clip.start),
-                  "-map", "0:v:0", "-map", "0:a:0?", *_codec(fast),
+                  "-map", "0:v:0", "-map", "0:a:0?", *codec,
                   "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", part])
             clip.out_start = offset
             offset += probe_duration(part)
@@ -156,7 +224,7 @@ def cut(video, clips, out_path, fast=False):
 
 
 def retime(cues, clips):
-    """The source subtitles, moved onto the reel's timeline."""
+    """The source subtitles, moved onto a cut video's timeline."""
     out = []
     for clip in clips:
         for cue in cues:
