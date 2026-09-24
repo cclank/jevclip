@@ -126,7 +126,11 @@ class Store:
             pos += len(cue.text) + 1
         text = "\n".join(lines) + "\n"
         ranges = [list(r) for r in subtitles.segment(cues, target=target)]
-        digest = hashlib.sha256((text + json.dumps(ranges)).encode("utf-8")).hexdigest()
+        # Timings and paragraph positions are part of the transcript too. If
+        # only those change, Jev can reuse its text-based answers while cuts
+        # and citations must follow the new positions.
+        digest = hashlib.sha256(json.dumps(
+            [text, cue_map, ranges, timed], ensure_ascii=False).encode("utf-8")).hexdigest()
 
         source = video or subtitles_path
         doc_id = doc_id or slug(source)

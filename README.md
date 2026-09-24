@@ -36,21 +36,22 @@ macOS 和 Linux 都能用。需要三样东西：Python 3.9 以上、ffmpeg、�
 | Ubuntu、Debian | `sudo apt install ffmpeg`；uv 用 `curl -LsSf https://astral.sh/uv/install.sh \| sh` 或 `pip install uv` |
 | Fedora、CentOS、Rocky、阿里云 Linux 等 | 官方源里的 ffmpeg 不带 libx264，或者根本没有。装 RPM Fusion 的 ffmpeg，或者把[静态编译版](https://johnvansickle.com/ffmpeg/)放进 PATH |
 
-**用安装包**，比如内部试用拿到的 `jevclip-0.1.1.zip`：
+**从 GitHub 安装**：
 
 ```bash
-unzip jevclip-0.1.1.zip && cd jevclip-0.1.1
-uv tool install ./jevclip-0.1.1-py3-none-any.whl     # 有 Python 3.9+ 就不用联网；装好后任意目录直接敲 jevclip
+git clone https://github.com/cclank/jevclip.git
+cd jevclip
+uv tool install .                                      # 装好后任意目录直接敲 jevclip
 ```
 
 系统的 Python 低于 3.9 时，比如 CentOS 7、Ubuntu 20.04，uv 会自己下载一个新的；国内下载慢可以设 `UV_PYTHON_INSTALL_MIRROR` 指向镜像。
 不想装 uv，用 Python 自带的虚拟环境也行，命令在 `~/.jevclip/bin/jevclip`。Ubuntu、Debian 要先 `sudo apt install python3-venv`：
 
 ```bash
-python3 -m venv ~/.jevclip && ~/.jevclip/bin/pip install ./jevclip-0.1.1-py3-none-any.whl
+python3 -m venv ~/.jevclip && ~/.jevclip/bin/pip install .
 ```
 
-**用源码**，要改代码的人，在源码目录里：
+要改代码的人，在源码目录里用可编辑安装：
 
 ```bash
 uv tool install --editable .                         # 改了代码不用重装
@@ -64,7 +65,7 @@ echo 'export TYPESAFE_API_KEY=你的key' >> ~/.zshrc
 echo 'export MINIMAX_BASE_URL=https://api.minimax.io MINIMAX_API_KEY=你的key' >> ~/.zshrc   # 可选，写总结用；别的模型见「配置」
 ```
 
-升级：拿到新安装包后 `uv tool install --force ./新的.whl`。卸载：`uv tool uninstall jevclip`。
+升级：在仓库里 `git pull && uv tool install --force .`。卸载：`uv tool uninstall jevclip`。
 判断结果缓存在 `~/.jevclip/cache.db`，升级和卸载都不会动它。
 
 ## 第一次跑
@@ -75,7 +76,7 @@ open jevclip-out/第一期-*/report.md        # 先看报告，Linux 用 xdg-ope
 jevclip run 视频目录/                      # 批量；已经判断过的段不再花钱
 ```
 
-手头没有合适的视频，可以先跑安装包里的合成示例，它会生成一段 9 分钟、每段预先标好该不该留的视频（见[实测](#实测)）：
+手头没有合适的视频，可以先跑仓库里的合成示例，它会生成一段 9 分钟、每段预先标好该不该留的视频（见[实测](#实测)）：
 
 ```bash
 python3 examples/make_demo.py demo && jevclip run demo/ && python3 examples/score_demo.py demo jevclip-out

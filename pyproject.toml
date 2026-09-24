@@ -17,6 +17,11 @@ classifiers = [
 ]
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/cclank/jevclip"
+Repository = "https://github.com/cclank/jevclip"
+Issues = "https://github.com/cclank/jevclip/issues"
+
 [project.scripts]
 jevclip = "jevclip.cli:main"
 

@@ -204,11 +204,14 @@ def _clean(cues):
         text = " ".join(_TAG.sub("", html.unescape(cue.text)).split())
         if not text or cue.end <= cue.start:
             continue
-        if out and text == out[-1].text:  # repeated cue: extend, don't duplicate
+        # Rolling captions update almost immediately. The same words spoken
+        # after a pause are a new cue, even when no other subtitle intervenes.
+        rolling = bool(out and cue.start <= out[-1].end + 0.5)
+        if rolling and text == out[-1].text:  # repeated cue: extend, don't duplicate
             out[-1].end = max(out[-1].end, cue.end)
             continue
         prev = out[-1].text if out else ""
-        if len(prev) >= 4 and text.startswith(prev):  # rolling captions repeat the last line
+        if rolling and len(prev) >= 4 and text.startswith(prev):  # repeated last line
             text = text[len(prev) :].strip()
             if not text:
                 continue

@@ -49,14 +49,23 @@ def pick(verdicts, max_seconds=180.0, pad=0.3, gap=2.0, duration=None):
     """
     order = sorted(verdicts, key=lambda v: v.segment.start)
     chosen = [v for v in order if v.keep] if not max_seconds else _knapsack(order, int(max_seconds), pad)
-    clips = []
+    bounds = []
     for v in chosen:
         start = max(0.0, v.segment.start - pad)
         end = v.segment.end + pad
         if duration:
             end = min(end, duration)
-        if clips and start - clips[-1].end <= gap:
-            clips[-1].end = max(clips[-1].end, end)
+        bounds.append((v, start, end))
+    # The knapsack charges each padded segment. Joining nearby segments also
+    # plays the gap between them; only join when that gap fits the budget.
+    total = sum(end - start for _, start, end in bounds)
+    clips = []
+    for v, start, end in bounds:
+        previous = clips[-1] if clips else None
+        extra = max(0.0, end - previous.end) - (end - start) if previous else 0.0
+        if previous and start - previous.end <= gap and (not max_seconds or total + extra <= max_seconds + 1e-6):
+            previous.end = max(previous.end, end)
+            total += extra
             clips[-1].verdicts.append(v)
         else:
             clips.append(Clip(start, end, [v]))

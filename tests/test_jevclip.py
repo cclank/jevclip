@@ -112,6 +112,14 @@ class Subtitles(Temp):
         self.assertEqual([c.text for c in cues], ["今天我们来聊", "本地模型"])
         self.assertEqual(cues[-1].end, 8)
 
+    def test_repeated_words_after_a_pause_are_kept(self):
+        raw = srt([(0, 1, "好的"), (100, 101, "好的"),
+                   (200, 201, "这个模型"), (300, 301, "这个模型很快")])
+        cues = subtitles.parse(write(self.tmp, "a.srt", raw))
+        self.assertEqual([(c.start, c.end, c.text) for c in cues],
+                         [(0, 1, "好的"), (100, 101, "好的"),
+                          (200, 201, "这个模型"), (300, 301, "这个模型很快")])
+
     def test_unsupported_suffix(self):
         with self.assertRaises(ValueError):
             subtitles.parse(write(self.tmp, "a.docx", "hello"))
@@ -283,6 +291,14 @@ class Storing(Temp):
     def test_resegmenting_bumps_the_version(self):
         versions = [self.store.ingest(self.subs, target=x).version for x in (9.0, 9.0, 30.0)]
         self.assertEqual(versions, [1, 1, 2])
+
+    def test_changed_cue_times_update_the_transcript(self):
+        subs = write(self.tmp, "shift.srt", srt([(10, 12, "同一句话")]))
+        first = self.store.ingest(subs)
+        write(self.tmp, "shift.srt", srt([(20, 22, "同一句话")]))
+        second = self.store.ingest(subs)
+        self.assertEqual((first.version, first.segments[0].where), (1, "00:10–00:12"))
+        self.assertEqual((second.version, second.segments[0].where), (2, "00:20–00:22"))
 
     def test_moved_files_update_without_a_new_version(self):
         first = self.store.ingest(self.subs, video="/old/place/talk.mp4", doc_id="talk")
@@ -479,6 +495,12 @@ class Highlights(unittest.TestCase):
         clips = reel.pick([self.kept(0, 90, 0.9), self.kept(100, 190, 0.8)], max_seconds=180, pad=0.3)
         self.assertEqual(len(clips), 1)
         self.assertLessEqual(sum(c.end - c.start for c in clips), 180)
+
+    def test_joined_pauses_stay_within_the_budget(self):
+        vs = [self.kept(i * 21.9, i * 21.9 + 20, 0.9) for i in range(3)]
+        clips = reel.pick(vs, max_seconds=63, pad=0.3)
+        self.assertEqual(sum(len(c.verdicts) for c in clips), 3)
+        self.assertLessEqual(sum(c.end - c.start for c in clips), 63)
 
     def test_hardware_encoding_follows_the_source_bit_rate(self):
         rate = lambda bitrate: reel._codec(True, bitrate)[reel._codec(True, bitrate).index("-b:v") + 1]
