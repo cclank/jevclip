@@ -13,7 +13,8 @@ DEFAULT_DB = os.environ.get("JEVCLIP_DB", "~/.jevclip/cache.db")
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="jevclip",
-        description="Keep the valuable parts of a video: judged timeline, cited summary, highlight reel.",
+        description="Keep the valuable parts of a video: judged timeline, cited summary, highlight reel, "
+                    "and the full video minus what is surely worthless.",
     )
     ap.add_argument("--db", default=DEFAULT_DB, help="cache of transcripts and Jev answers (env JEVCLIP_DB)")
     sub = ap.add_subparsers(dest="cmd", required=True)

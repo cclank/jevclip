@@ -1,8 +1,9 @@
 [project]
 name = "jevclip"
 version = "0.1.0"
-description = "Keep the valuable parts of a video: Jev judges each segment of the subtitles, code cuts the highlight reel."
-requires-python = ">=3.10"
+description = "Keep the valuable parts of a video: Jev judges each subtitle segment; out come a cited summary, a highlight reel and the full video minus what is surely worthless."
+readme = "README.md"
+requires-python = ">=3.9"
 dependencies = []
 
 [project.scripts]

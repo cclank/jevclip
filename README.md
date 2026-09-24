@@ -1,6 +1,6 @@
 # jevclip
 
-[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-2ea44f)](pyproject.toml)
 [![Judge](https://img.shields.io/badge/judge-jev--1.13.0-6f42c1)](https://docs.typesafe.ai)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-highlight%20reels-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org)
@@ -24,16 +24,54 @@ jevclip run 文字稿.md                               # 只有文字稿也行�
 
 ## 安装
 
+需要三样东西：Python 3.9 以上（macOS 自带的就行）、ffmpeg、一个 [TypeSafe](https://docs.typesafe.ai) 的 API Key。
+写总结还要一个 OpenAI 兼容的模型接口；没有也能跑，只是总结换成原文摘录。
+
+**用安装包**，比如内部试用拿到的 `jevclip-0.1.0.zip`：
+
 ```bash
-cd jevclip
-uv tool install --editable .                  # 装成全局命令，任意目录直接敲 jevclip；改了代码不用重装
-# 不用 uv：python -m venv .venv && .venv/bin/pip install -e .，命令在 .venv/bin/jevclip
-brew install ffmpeg                           # 只看时间线和总结可以不装（加 --no-cut）
-echo 'export TYPESAFE_API_KEY=你的key' >> ~/.zshrc   # 然后新开一个终端
+unzip jevclip-0.1.0.zip && cd jevclip-0.1.0
+brew install uv ffmpeg                               # 装过就跳过
+uv tool install ./jevclip-0.1.0-py3-none-any.whl     # 不用联网；装好后任意目录直接敲 jevclip
 ```
 
-需要 Python ≥ 3.10、一个 [TypeSafe](https://docs.typesafe.ai) 的 API Key。写总结还需要一个 OpenAI 兼容的模型接口（见[配置](#配置)），没有也能跑，只是总结换成原文摘录。
-卸载：`uv tool uninstall jevclip`。
+不想装 uv，用 Python 自带的虚拟环境也行，命令在 `~/.jevclip/bin/jevclip`：
+
+```bash
+python3 -m venv ~/.jevclip && ~/.jevclip/bin/pip install ./jevclip-0.1.0-py3-none-any.whl
+```
+
+**用源码**，要改代码的人：
+
+```bash
+git clone <仓库地址> && cd jevclip
+uv tool install --editable .                         # 改了代码不用重装
+```
+
+uv 提示 `is not on your PATH` 的话，运行一次 `uv tool update-shell`。
+最后把 key 写进 shell 配置，新开一个终端，`jevclip --help` 能出帮助就装好了：
+
+```bash
+echo 'export TYPESAFE_API_KEY=你的key' >> ~/.zshrc
+echo 'export MINIMAX_BASE_URL=https://api.minimax.io MINIMAX_API_KEY=你的key' >> ~/.zshrc   # 可选，写总结用；别的模型见「配置」
+```
+
+升级：拿到新安装包后 `uv tool install --force ./新的.whl`。卸载：`uv tool uninstall jevclip`。
+判断结果缓存在 `~/.jevclip/cache.db`，升级和卸载都不会动它。
+
+## 第一次跑
+
+```bash
+jevclip run 第一期.mp4                    # 同一个文件夹里要有 第一期.srt（或 .vtt / .json / .txt）
+open jevclip-out/第一期-*/report.md        # 先看报告；同一个文件夹里还有 highlights.mp4 和 full.mp4
+jevclip run 视频目录/                      # 批量；已经判断过的段不再花钱
+```
+
+手头没有合适的视频，可以先跑安装包里的合成示例，它会生成一段 9 分钟、每段预先标好该不该留的视频（见[实测](#实测)）：
+
+```bash
+python3 examples/make_demo.py demo && jevclip run demo/ && python3 examples/score_demo.py demo jevclip-out
+```
 
 ## 准备输入
 
@@ -155,6 +193,19 @@ jevclip eval segs.jsonl        # 读回标注，推荐门槛
 **判断一次，门槛随便调。** 每个请求按完整内容（模型、字幕原文、题目措辞）做哈希缓存，存在 `~/.jevclip/cache.db`。
 重跑、改门槛、换预算都不再调用 Jev；只有换关注点、改题目或字幕变了才会重新判断。调用失败的段标为"未判断"，
 不会被当成没价值，也不进高亮，下次运行自动重试。
+
+## 常见问题
+
+| 看到什么 | 原因和办法 |
+|---|---|
+| `N 段未判断（no_api_key）`，有价值 0 段 | 这个终端里没有 `TYPESAFE_API_KEY`。设好后重跑，只会补判没判断过的段 |
+| `skipped: no subtitles or script next to it` | 视频旁边没有同名字幕。放一个同名的 .srt，或者用 `--subs 字幕文件` 指定 |
+| `failed: ffmpeg not found` | 装 ffmpeg，或者加 `--no-cut` 只出报告 |
+| 报告里写「未配置总结模型，只给原文摘录」 | 没配总结模型，见[配置](#配置) |
+| 「总结模型调用失败：http_401」 | 总结模型的 key 或接口地址不对 |
+| 改了文件名或 `--title` 后又调用了一遍 Jev | 标题也是题目的一部分，换标题会重新判断；费用很低，见[实测](#实测) |
+| 连不上 Jev | 需要代理就设 `HTTPS_PROXY`；macOS 的系统代理会自动识别 |
+| 没有出 `full.mp4` | 没有要删的段，完整版就是原片；报告的「去水完整版」一节会写明 |
 
 ## 门槛怎么定
 
