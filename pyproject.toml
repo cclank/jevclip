@@ -3,7 +3,18 @@ name = "jevclip"
 version = "0.1.1"
 description = "Keep the valuable parts of a video: Jev judges each subtitle segment; out come a cited summary, a highlight reel and the full video minus what is surely worthless."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
+keywords = ["video", "subtitles", "highlights", "summary", "jev", "ffmpeg"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Video",
+]
 dependencies = []
 
 [project.scripts]

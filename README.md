@@ -7,6 +7,7 @@
 [![Input](https://img.shields.io/badge/input-SRT%20%7C%20VTT%20%7C%20whisper%20JSON%20%7C%20TXT%20%7C%20MD-0a7bbb)](#准备输入)
 [![Tests](https://img.shields.io/badge/tests-offline%2C%20no%20API%20key-2ea44f)](#开发)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-555555)](#安装)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Status](https://img.shields.io/badge/status-alpha-orange)](#门槛怎么定)
 
 把视频里有价值的部分留下来：**Jev 逐段判断字幕或文字稿，代码剪出两个视频——3 分钟的高亮，和只删废话的去水完整版——总结里每一句都能点回原视频的时间点。**
@@ -49,10 +50,9 @@ uv tool install ./jevclip-0.1.1-py3-none-any.whl     # 有 Python 3.9+ 就不用
 python3 -m venv ~/.jevclip && ~/.jevclip/bin/pip install ./jevclip-0.1.1-py3-none-any.whl
 ```
 
-**用源码**，要改代码的人：
+**用源码**，要改代码的人，在源码目录里：
 
 ```bash
-git clone <仓库地址> && cd jevclip
 uv tool install --editable .                         # 改了代码不用重装
 ```
 
@@ -349,4 +349,8 @@ with Store("~/.jevclip/cache.db") as store:
 python -m unittest discover -s tests     # 离线；装了 ffmpeg 会多跑几个逐帧取色的剪辑测试
 ```
 
-jevclip 从 [jevrag](../jevrag) 里拆出来：同一套"代码绑定来源、Jev 判断、代码决定"的做法，jevrag 管文档问答，jevclip 管视频。
+jevclip 从 jevrag 里拆出来：同一套"代码绑定来源、Jev 判断、代码决定"的做法，jevrag 管文档问答，jevclip 管视频。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。
